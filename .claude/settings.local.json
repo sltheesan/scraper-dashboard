@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(node -e \"import\\('./src/server.js'\\)\")",
+      "Bash(node --check src/server.js)",
+      "Bash(node --check src/routes/profiles.js)",
+      "Bash(node --check src/models/Profile.js)",
+      "Bash(npx playwright *)",
+      "Bash(node --check src/scraper.js)",
+      "Bash(node --check scripts/login.js)",
+      "Bash(node --check src/parsers/cgaming.js)",
+      "Bash(node --check src/models/Scrape.js)",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node --check src/parsers/zoomwlb.js)"
+    ]
+  }
+}

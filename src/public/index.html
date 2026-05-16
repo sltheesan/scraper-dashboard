@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scraper Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Scraper Dashboard</h1>
+      <div class="topbar-right">
+        <span id="user" class="muted"></span>
+        <button id="open-settings" class="ghost">Settings</button>
+        <button id="logout" class="ghost">Sign out</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <div class="section-head">
+          <h2>Profiles</h2>
+          <button id="new-profile">+ New profile</button>
+        </div>
+
+        <div id="empty" class="empty muted" hidden>
+          No profiles yet. Click <strong>New profile</strong> to add one.
+        </div>
+
+        <table id="profiles-table" hidden>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Target URL</th>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Last scrape</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="profiles-body"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Activity</h2>
+          <div class="log-controls">
+            <span id="log-status" class="muted">connecting…</span>
+            <label class="inline-row" style="margin: 0;">
+              <input type="checkbox" id="log-autoscroll" checked />
+              Auto-scroll
+            </label>
+            <button id="log-clear" class="ghost small">Clear</button>
+          </div>
+        </div>
+        <div id="log-panel" class="log-panel">
+          <div class="muted" style="padding: 12px;">No events yet.</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Settings modal -->
+    <div id="settings-modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>Scheduler settings</h3>
+          <button class="ghost" id="settings-close">×</button>
+        </div>
+        <div class="login-body">
+          <p class="muted">Two independent schedules apply to every profile.
+          Scheduled fetches save to the database; manual fetches just preview.</p>
+
+          <fieldset class="fields-block">
+            <legend>Scheduled refresh &amp; fetch</legend>
+            <p class="muted" style="margin: 0 0 10px; font-size: 12px;">
+              Periodically fetch and save data for every profile.
+            </p>
+            <label class="inline-row">
+              <input type="checkbox" id="fetch-enabled" />
+              Enable
+            </label>
+            <label>
+              Interval (minutes, min 1)
+              <input type="number" id="fetch-minutes" min="1" step="1" value="5" />
+            </label>
+          </fieldset>
+
+          <fieldset class="fields-block">
+            <legend>Profile refresh (keep session alive)</legend>
+            <p class="muted" style="margin: 0 0 10px; font-size: 12px;">
+              Just reloads the page periodically so the site doesn't log you out for inactivity.
+              No data is saved.
+            </p>
+            <label class="inline-row">
+              <input type="checkbox" id="refresh-enabled" />
+              Enable
+            </label>
+            <label>
+              Interval (minutes, min 1)
+              <input type="number" id="refresh-minutes" min="1" step="1" value="5" />
+            </label>
+          </fieldset>
+
+          <div class="modal-actions">
+            <button type="button" class="ghost" id="settings-cancel">Cancel</button>
+            <button type="button" id="settings-save">Save</button>
+          </div>
+          <p id="settings-error" class="error" hidden></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Login session modal -->
+    <div id="login-modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="login-modal-title">Login session</h3>
+        </div>
+        <div class="login-body">
+          <p>A browser window has opened on this machine for
+            <strong id="login-profile-name"></strong>.</p>
+          <ol class="muted">
+            <li>Complete the login in that window.</li>
+            <li>Navigate to wherever the data lives if you'd like to verify.</li>
+            <li>Come back here and click <strong>Save session</strong>.</li>
+          </ol>
+          <p id="login-status" class="muted"></p>
+          <div class="modal-actions">
+            <button type="button" class="ghost" id="login-cancel">Cancel</button>
+            <button type="button" id="login-save">Save session</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fetch result modal -->
+    <div id="fetch-modal" class="modal" hidden>
+      <div class="modal-card modal-wide">
+        <div class="modal-head">
+          <h3 id="fetch-modal-title">Fetch result</h3>
+          <button class="ghost" id="fetch-modal-close">×</button>
+        </div>
+        <div id="fetch-modal-body" class="fetch-body">
+          <p class="muted">Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add / edit profile modal -->
+    <div id="modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="modal-title">New profile</h3>
+          <button class="ghost" id="modal-close">×</button>
+        </div>
+        <form id="profile-form">
+          <input type="hidden" name="id" />
+
+          <label>
+            Name <span class="muted">(letters, numbers, _ or -)</span>
+            <input name="name" pattern="[a-zA-Z0-9_-]+" maxlength="64" required />
+          </label>
+
+          <label>
+            Kind <span class="muted">(controls how scraped data is parsed)</span>
+            <select name="kind" required>
+              <option value="cgaming">cgaming (table — bank-summary)</option>
+              <option value="zoomwlb">zoomwlb (data fields by id)</option>
+            </select>
+          </label>
+
+          <label>
+            Login URL <span class="muted">(where you log in)</span>
+            <input name="loginUrl" type="url" required placeholder="https://example.com/" />
+          </label>
+
+          <label>
+            Target URL <span class="muted">(page to scrape after login)</span>
+            <input name="targetUrl" type="url" required placeholder="https://example.com/dashboard" />
+          </label>
+
+          <label>
+            Button selector <span class="muted">(optional — click before scraping)</span>
+            <input name="buttonSelector" placeholder="e.g. button.show-data" />
+          </label>
+
+          <fieldset class="fields-block">
+            <legend>Data fields <span class="muted">(HTML id → label)</span></legend>
+            <div id="data-fields"></div>
+            <button type="button" class="ghost small" id="add-field">+ Add field</button>
+          </fieldset>
+
+          <label>
+            Proxy <span class="muted">(optional)</span>
+            <input name="proxy" placeholder="http://user:pass@host:port" />
+          </label>
+
+          <label>
+            Notes
+            <input name="notes" />
+          </label>
+
+          <div class="modal-actions">
+            <button type="button" class="ghost" id="modal-cancel">Cancel</button>
+            <button type="submit" id="save-btn">Save</button>
+          </div>
+          <p id="form-error" class="error" hidden></p>
+        </form>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

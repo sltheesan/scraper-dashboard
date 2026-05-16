@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in · Scraper Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body class="centered">
+    <main class="card">
+      <h1>Scraper Dashboard</h1>
+      <p class="muted">Sign in to continue</p>
+
+      <form id="login-form">
+        <label>
+          Username
+          <input type="text" name="username" autocomplete="username" required autofocus />
+        </label>
+        <label>
+          Password
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Sign in</button>
+        <p id="error" class="error" hidden></p>
+      </form>
+    </main>
+
+    <script>
+      const form = document.getElementById('login-form');
+      const errorEl = document.getElementById('error');
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorEl.hidden = true;
+        const data = Object.fromEntries(new FormData(form));
+        const button = form.querySelector('button');
+        button.disabled = true;
+
+        try {
+          const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.error || 'Login failed');
+          }
+          window.location.href = '/';
+        } catch (err) {
+          errorEl.textContent = err.message;
+          errorEl.hidden = false;
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

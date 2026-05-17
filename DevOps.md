@@ -40,27 +40,25 @@ ufw allow 80
 ufw allow 443
 ufw --force enable
 
-# Create a non-root deploy user
-adduser --disabled-password --gecos "" deploy
-usermod -aG sudo deploy
-mkdir -p /home/deploy/.ssh
-
-# Add your GitHub Actions deploy key's PUBLIC key:
-echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqp6oCPnneZUOmKYNJpiPrevPAKuUQSn4PBpe4cw+nt sltheesan@gmail.com github-deploy" > /home/deploy/.ssh/authorized_keys
-chown -R deploy:deploy /home/deploy/.ssh
-chmod 700 /home/deploy/.ssh && chmod 600 /home/deploy/.ssh/authorized_keys
+# Add your GitHub Actions deploy key's PUBLIC key so Actions can SSH in as root:
+mkdir -p /root/.ssh
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqp6oCPnneZUOmKYNJpiPrevPAKuUQSn4PBpe4cw+nt sltheesan@gmail.com github-deploy" >> /root/.ssh/authorized_keys
+chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
 
 # Install Docker
 curl -fsSL https://get.docker.com | sh
-usermod -aG docker deploy
 
-# Disable password SSH + root login
+# Disable password SSH (keep root key login allowed)
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 systemctl restart ssh
 ```
 
-From now on, SSH in as `deploy@your-vps-ip`.
+SSH in as `root@your-vps-ip` for all subsequent stages.
+
+> **Note:** running everything as `root` is simpler but less secure than the
+> usual non-root `deploy` user. For this single-tenant scraper VPS, the
+> trade-off is acceptable.
 
 ---
 
@@ -186,18 +184,16 @@ some require you to manually allow incoming SSH.
 
 **What you're doing:** locking down the server and installing Docker.
 
-Run the block from **§2** above as `root`, with **two adjustments**:
-
-- Replace the `ssh-ed25519 AAAA…` example with **your own** Mac's public
-  key (so you can keep logging in as the `deploy` user).
-- This commit's deploy key (from Stage 4 below) will be added later in
-  Stage 4 — for now, just your personal key is enough.
+Run the block from **§2** above as `root`. The script adds your GitHub
+Actions deploy key (Stage 4 below) to `/root/.ssh/authorized_keys` so the
+workflow can SSH in as root. Replace the example `ssh-ed25519 AAAA…` line
+with whichever public key you want to authorize on first login.
 
 **Verify:**
 
 ```bash
 # From your Mac:
-ssh deploy@YOUR_VPS_IP
+ssh root@YOUR_VPS_IP
 docker --version              # should print Docker version 27.x or similar
 exit
 ```
@@ -247,18 +243,18 @@ This creates two files:
   secret in Stage 7; never share)
 - `~/.ssh/gh-scraper-deploy.pub` — the **public** key (goes onto the VPS)
 
-Authorize the public half on the VPS:
+Authorize the public half on the VPS as root:
 
 ```bash
-ssh deploy@159.223.49.68 \
-  "cat >> ~/.ssh/authorized_keys" < ~/.ssh/gh-scraper-deploy.pub
+ssh root@159.223.49.68 \
+  "cat >> /root/.ssh/authorized_keys" < ~/.ssh/gh-scraper-deploy.pub
 ```
 
 **Verify:**
 
 ```bash
-ssh -i ~/.ssh/gh-scraper-deploy deploy@159.223.49.68 "whoami"
-# Should print: deploy
+ssh -i ~/.ssh/gh-scraper-deploy root@159.223.49.68 "whoami"
+# Should print: root
 ```
 
 Keep the private key file around — Stage 7 needs it.
@@ -323,7 +319,7 @@ Go to: your repo → **Settings** → **Secrets and variables** → **Actions** 
 | Secret name | What to paste |
 |---|---|
 | `VPS_HOST` | The VPS IPv4 address |
-| `VPS_USER` | `deploy` |
+| `VPS_USER` | `root` |
 | `VPS_SSH_KEY` | The **full contents** of `~/.ssh/gh-scraper-deploy` (the private key). Open it with `cat ~/.ssh/gh-scraper-deploy` and copy from `-----BEGIN OPENSSH PRIVATE KEY-----` to `-----END OPENSSH PRIVATE KEY-----` inclusive. |
 | `GHCR_READ_TOKEN` | The token text from Stage 5 |
 
@@ -339,12 +335,12 @@ Go to: your repo → **Settings** → **Secrets and variables** → **Actions** 
 `.env` on the VPS, then booting the stack manually once to confirm
 everything works before turning it over to Actions.
 
-SSH in as `deploy`, then:
+SSH in as `root`, then:
 
 ```bash
-mkdir -p ~/scraper-app/volumes/{profiles,mongo_data,caddy_data,caddy_config}
-mkdir -p ~/scraper-app/backups
-cd ~/scraper-app
+mkdir -p /root/scraper-app/volumes/{profiles,mongo_data,caddy_data,caddy_config}
+mkdir -p /root/scraper-app/backups
+cd /root/scraper-app
 
 # Place the three files manually:
 nano docker-compose.yml       # paste contents from §19, change image name to your repo
@@ -412,12 +408,11 @@ error in the Dockerfile or a Node dependency that needs a system package.
 **If the deploy job fails:**
 
 - `Permission denied (publickey)` → the `VPS_SSH_KEY` secret is wrong, or
-  the public half isn't in `/home/deploy/.ssh/authorized_keys` on the VPS.
+  the public half isn't in `/root/.ssh/authorized_keys` on the VPS.
 - `pull access denied` → the `GHCR_READ_TOKEN` is wrong, or doesn't have
   `read:packages`.
-- `docker: command not found` → SSH'ed as `deploy` but `deploy` isn't in
-  the `docker` group. Bootstrap Stage 2 fixes this; if you skipped it:
-  `sudo usermod -aG docker deploy && exit && ssh back in`.
+- `docker: command not found` → Docker wasn't installed by Stage 2 — re-run
+  `curl -fsSL https://get.docker.com | sh` on the VPS as root.
 
 ---
 
@@ -442,7 +437,7 @@ the VPS, so the headless server can pick up where you left off.
 ```bash
 # On your Mac, in the project root:
 rsync -avz --delete ./profiles/ \
-  deploy@YOUR_VPS_IP:/home/deploy/scraper-app/volumes/profiles/
+  root@YOUR_VPS_IP:/root/scraper-app/volumes/profiles/
 ```
 
 Now back in the dashboard, click **Fetch** on a profile — should work
@@ -463,7 +458,7 @@ For new logins after this, your options are:
 **What you're doing:** protecting the Mongo data so you can recover from
 disk loss or accidental deletion.
 
-SSH in as `deploy`, then `sudo -i` to become root:
+SSH in as `root`:
 
 ```bash
 nano /etc/cron.daily/mongo-backup
@@ -476,8 +471,8 @@ Paste this:
 set -e
 docker exec scraper-app-mongo-1 mongodump --archive --gzip \
   -u root -p "$MONGO_PASSWORD" --authenticationDatabase admin \
-  > /home/deploy/scraper-app/backups/mongo-$(date +%F).gz
-find /home/deploy/scraper-app/backups -name "mongo-*.gz" -mtime +7 -delete
+  > /root/scraper-app/backups/mongo-$(date +%F).gz
+find /root/scraper-app/backups -name "mongo-*.gz" -mtime +7 -delete
 ```
 
 Then:
@@ -491,7 +486,7 @@ echo 'MONGO_PASSWORD=THE_PASSWORD_FROM_ENV' >> /etc/environment
 
 # Test it now:
 MONGO_PASSWORD=THE_PASSWORD_FROM_ENV /etc/cron.daily/mongo-backup
-ls -lh /home/deploy/scraper-app/backups/
+ls -lh /root/scraper-app/backups/
 # You should see a fresh mongo-YYYY-MM-DD.gz file.
 ```
 
@@ -552,7 +547,7 @@ docker compose up -d
 ## 14. Production File Layout on the VPS
 
 ```
-/home/deploy/scraper-app/
+/root/scraper-app/
 ├── docker-compose.yml          ← placed by hand
 ├── Caddyfile                   ← placed by hand
 ├── .env                        ← production secrets, NEVER in git
@@ -818,7 +813,7 @@ jobs:
           envs: GITHUB_SHA,GITHUB_ACTOR
           script: |
             set -e
-            cd /home/deploy/scraper-app
+            cd /root/scraper-app
             export TAG=sha-${GITHUB_SHA::7}
             echo "${{ secrets.GHCR_READ_TOKEN }}" \
               | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin

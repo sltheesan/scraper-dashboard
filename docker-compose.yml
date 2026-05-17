@@ -1,5 +1,5 @@
 # Production runtime composition for the Scraper Dashboard.
-# Lives on the VPS at /home/deploy/scraper-app/docker-compose.yml.
+# Lives on the VPS at /root/scraper-app/docker-compose.yml.
 # The VPS only ever runs `docker compose pull && up -d` — it never builds.
 
 services:

@@ -61,7 +61,7 @@ jobs:
           envs: GITHUB_SHA,GITHUB_ACTOR
           script: |
             set -e
-            cd /home/deploy/scraper-app
+            cd /root/scraper-app
 
             # Pin to the exact commit we just built.
             export TAG=sha-${GITHUB_SHA::7}

@@ -85,7 +85,7 @@ business logic + selectors.
 ---
 
 ## 4. Branch & Push Workflow (day-to-day)
-fjdks
+
 ```bash
 git checkout -b feature/recent-scrapes-view   # for a new change
 # … edit code …
@@ -100,83 +100,472 @@ For quick fixes, you can push directly to `main` — deploy auto-runs.
 
 ---
 
-## 5. Files You'll Need to Add (when ready to deploy)
+# Part B — Beginner Walk-Through: Setting Up CI/CD
 
-Currently missing from the repo:
+If CI/CD is new to you, do these stages **in order**. Each stage explains
+what you're doing, why, the exact commands, and how to verify it worked.
 
-| File | Purpose |
-|---|---|
-| `Dockerfile` | Builds the app image with Node 20 + Playwright |
-| `docker-compose.yml` | Production: `app` + `mongo` + `caddy` services |
-| `Caddyfile` | Reverse proxy + automatic HTTPS |
-| `.github/workflows/deploy.yml` | CI/CD pipeline |
-| `.dockerignore` | Skip `node_modules`, `profiles`, `.env`, `.git` |
+## The big picture
 
-Each is ~30–60 lines. None blocks you from starting the workflow above —
-they're generated when you're ready to go live.
+Here's the whole flow once it's set up:
+
+```
+You: `git push origin main`
+   │
+   ▼
+GitHub Actions: builds a Docker image of your app
+   │
+   ▼
+GitHub Actions: pushes the image to ghcr.io (GitHub's image registry)
+   │
+   ▼
+GitHub Actions: SSHes into your VPS and runs `docker compose pull && up -d`
+   │
+   ▼
+VPS: downloads the new image and restarts the app container
+   │
+   ▼
+Users: see the new version at https://yourdomain.com
+```
+
+Three "actors" cooperate: **your Mac** (where you write code), **GitHub**
+(stores code, runs Actions, hosts the Docker image), and **the VPS** (runs
+the live app).
+
+## Setup stages overview
+
+```
+Stage 1   Get a VPS                            (~15 min)
+Stage 2   Bootstrap the VPS                    (~10 min)
+Stage 3   Buy a domain + point DNS             (~5 min + DNS wait)
+Stage 4   Generate the deploy SSH key          (~5 min)
+Stage 5   Create a GHCR access token           (~3 min)
+Stage 6   Add the 5 deploy files to the repo   (~5 min — I generate these)
+Stage 7   Set GitHub Actions secrets           (~5 min)
+Stage 8   First-time app setup on the VPS      (~10 min)
+Stage 9   First Actions-driven deploy          (~5 min, mostly waiting)
+Stage 10  Verify the dashboard works           (~5 min)
+Stage 11  Transfer login sessions to the VPS   (~10 min)
+Stage 12  Configure daily Mongo backups        (~5 min)
+─────────────────────────────────────────────
+Total first-time setup: about 90 minutes
+```
+
+After that the daily workflow is just `git push`.
 
 ---
 
-## 6. GitHub Actions Shape
+## Stage 1 — Get a VPS
 
-Two-stage workflow:
+**What you're doing:** renting a Linux server in the cloud.
 
-```
-push to main
-   │
-   ▼
-┌──────────────────────────────────────┐
-│  Job 1: build-and-push               │
-│   - checkout                         │
-│   - log in to ghcr.io                │
-│   - docker build .                   │
-│   - docker tag :latest + :sha        │
-│   - docker push                      │
-└──────────────────────────────────────┘
-   │
-   ▼
-┌──────────────────────────────────────┐
-│  Job 2: deploy                       │
-│   - ssh deploy@$VPS_HOST             │
-│   - cd /home/deploy/scraper-app      │
-│   - docker compose pull              │
-│   - docker compose up -d             │
-│   - docker image prune -f            │
-└──────────────────────────────────────┘
+1. Sign up at a provider — Hetzner Cloud (cheapest), DigitalOcean (easiest
+   UI), or Vultr (good Asia coverage).
+2. Create a server with:
+   - **Image:** Ubuntu 22.04 LTS
+   - **Type:** 4 vCPU / 8 GB RAM
+   - **Region:** Singapore (closest to your scrape targets)
+   - **SSH key:** paste your Mac's public key (`cat ~/.ssh/id_ed25519.pub`)
+     so you can log in passwordless
+3. Note the public **IPv4 address** — you'll use it everywhere.
+
+**Verify:**
+
+```bash
+ssh root@YOUR_VPS_IP
+# you should see Ubuntu's welcome banner
+exit
 ```
 
-**Secrets in GitHub repo settings → Actions → Secrets:**
+**If SSH refuses:** check the provider's web UI for a firewall toggle —
+some require you to manually allow incoming SSH.
 
-| Name | Value |
+---
+
+## Stage 2 — Bootstrap the VPS
+
+**What you're doing:** locking down the server and installing Docker.
+
+Run the block from **§2** above as `root`, with **two adjustments**:
+
+- Replace the `ssh-ed25519 AAAA…` example with **your own** Mac's public
+  key (so you can keep logging in as the `deploy` user).
+- This commit's deploy key (from Stage 4 below) will be added later in
+  Stage 4 — for now, just your personal key is enough.
+
+**Verify:**
+
+```bash
+# From your Mac:
+ssh deploy@YOUR_VPS_IP
+docker --version              # should print Docker version 27.x or similar
+exit
+```
+
+**If `docker` is "command not found":** the install script silently failed —
+re-run `curl -fsSL https://get.docker.com | sh` as root.
+
+---
+
+## Stage 3 — Buy a domain and point DNS
+
+**What you're doing:** getting an HTTPS-friendly URL.
+
+1. Buy a domain at Cloudflare or Namecheap (~$10/yr).
+2. In your registrar's DNS settings, add an **A record**:
+   - **Name:** `@` (root) or a subdomain like `scraper`
+   - **Type:** `A`
+   - **Value:** `YOUR_VPS_IP`
+   - **TTL:** default
+3. Wait 5–30 minutes for DNS to propagate.
+
+**Verify:**
+
+```bash
+dig +short yourdomain.com
+# Should print YOUR_VPS_IP
+```
+
+**If you skip this stage:** Caddy can't get an HTTPS certificate. The app
+will still work on the raw IP over HTTP, but don't ship that to real users.
+
+---
+
+## Stage 4 — Generate the deploy SSH key
+
+**What you're doing:** GitHub Actions needs its own SSH key (separate from
+your personal one) to log into the VPS during the deploy step.
+
+```bash
+# On your MacBook:
+ssh-keygen -t ed25519 -f ~/.ssh/gh-scraper-deploy -N ""
+```
+
+This creates two files:
+
+- `~/.ssh/gh-scraper-deploy` — the **private** key (goes into a GitHub
+  secret in Stage 7; never share)
+- `~/.ssh/gh-scraper-deploy.pub` — the **public** key (goes onto the VPS)
+
+Authorize the public half on the VPS:
+
+```bash
+ssh deploy@159.223.49.68 \
+  "cat >> ~/.ssh/authorized_keys" < ~/.ssh/gh-scraper-deploy.pub
+```
+
+**Verify:**
+
+```bash
+ssh -i ~/.ssh/gh-scraper-deploy deploy@159.223.49.68 "whoami"
+# Should print: deploy
+```
+
+Keep the private key file around — Stage 7 needs it.
+
+---
+
+## Stage 5 — Create a GHCR access token
+
+**What you're doing:** the VPS needs to `docker pull` your private image
+from GitHub Container Registry. It needs its own credential to do so.
+
+1. Open https://github.com/settings/tokens?type=beta
+2. Click **Generate new token (fine-grained)**.
+3. Token name: `scraper-app GHCR read`
+4. Expiration: 1 year (your call)
+5. **Repository access:** only `sltheesan/scraper-app`
+6. **Permissions → Repository → Packages:** Read-only
+7. Click **Generate**, then **copy the token** (you only see it once).
+
+Save it temporarily in your password manager — Stage 7 needs it.
+
+---
+
+## Stage 6 — Add the 5 deploy files to your repo
+
+**What you're doing:** putting the build recipe + run recipe + CI workflow
+into git so GitHub can act on them.
+
+The five files are:
+
+| File | What it does |
 |---|---|
-| `GHCR_TOKEN` | A GitHub PAT with `write:packages` |
-| `VPS_HOST` | The VPS IP |
+| `Dockerfile` | Tells Docker how to build your app image |
+| `.dockerignore` | What to skip when building (similar to .gitignore) |
+| `docker-compose.yml` | Describes the 3-container runtime (app + mongo + caddy) |
+| `Caddyfile` | Reverse-proxy + automatic HTTPS config |
+| `.github/workflows/deploy.yml` | The GitHub Actions pipeline |
+
+**You don't have to write these by hand.** Reference templates are in
+appendices §17–§21. When you give me your VPS IP, domain, and GitHub
+username (see §22 at the bottom), I'll commit the right ones for you.
+
+For now, once you have them in the repo:
+
+```bash
+git add Dockerfile .dockerignore docker-compose.yml Caddyfile .github/workflows/deploy.yml
+git commit -m "Add Docker + CI/CD"
+# Don't push yet — Stage 7 first.
+```
+
+---
+
+## Stage 7 — Set the GitHub Actions secrets
+
+**What you're doing:** GitHub Actions needs credentials to log into your
+VPS and to pull from GHCR. We give it those credentials via "secrets" —
+encrypted env vars only the workflow can read.
+
+Go to: your repo → **Settings** → **Secrets and variables** → **Actions** →
+**New repository secret**. Add four:
+
+| Secret name | What to paste |
+|---|---|
+| `VPS_HOST` | The VPS IPv4 address |
 | `VPS_USER` | `deploy` |
-| `VPS_SSH_KEY` | The PRIVATE key whose public half is in `authorized_keys` |
+| `VPS_SSH_KEY` | The **full contents** of `~/.ssh/gh-scraper-deploy` (the private key). Open it with `cat ~/.ssh/gh-scraper-deploy` and copy from `-----BEGIN OPENSSH PRIVATE KEY-----` to `-----END OPENSSH PRIVATE KEY-----` inclusive. |
+| `GHCR_READ_TOKEN` | The token text from Stage 5 |
 
-The image lives at `ghcr.io/<you>/scraper-app:latest` — free with the repo,
-no Docker Hub needed.
+**Verify:** all four appear under "Repository secrets" on the same page.
+
+(`GITHUB_TOKEN` is provided automatically — don't add it as a secret.)
 
 ---
 
-## 7. Production File Layout on the VPS
+## Stage 8 — First-time app setup on the VPS
+
+**What you're doing:** placing `docker-compose.yml`, `Caddyfile`, and
+`.env` on the VPS, then booting the stack manually once to confirm
+everything works before turning it over to Actions.
+
+SSH in as `deploy`, then:
+
+```bash
+mkdir -p ~/scraper-app/volumes/{profiles,mongo_data,caddy_data,caddy_config}
+mkdir -p ~/scraper-app/backups
+cd ~/scraper-app
+
+# Place the three files manually:
+nano docker-compose.yml       # paste contents from §19, change image name to your repo
+nano Caddyfile                # paste contents from §20, replace yourdomain.com
+nano .env                     # paste contents from §15, fill in real secrets
+chmod 600 .env
+
+# One-time GHCR login. Actions repeats this on every deploy automatically.
+echo PASTE_YOUR_GHCR_TOKEN | \
+  docker login ghcr.io -u sltheesan --password-stdin
+
+# Boot the stack
+export TAG=latest
+docker compose pull
+docker compose up -d
+```
+
+**Verify:**
+
+```bash
+docker compose ps
+# All three services (app, mongo, caddy) should be in state "Up".
+
+docker compose logs -f app
+# You should see "MongoDB connected" and "scheduler started".
+# Press Ctrl+C to stop tailing.
+```
+
+Then in your browser visit `https://yourdomain.com`. Caddy fetches a
+Let's Encrypt cert on first request (may take 20–30 seconds) and you should
+see the login screen.
+
+**Common gotchas:**
+
+- `docker login` fails → token doesn't have `read:packages` permission.
+- App container exit-loops → check `docker compose logs app`. 99% of the
+  time it's a typo in `.env` (e.g. `MONGO_URL` doesn't match
+  `MONGO_INITDB_ROOT_PASSWORD`).
+- Browser shows "ERR_SSL_PROTOCOL_ERROR" → DNS hasn't propagated yet, or
+  Caddy is still issuing the cert. Wait a minute, refresh.
+
+---
+
+## Stage 9 — First Actions-driven deploy
+
+**What you're doing:** confirming the GitHub → VPS pipeline works end-to-end.
+
+On your Mac:
+
+```bash
+git push origin main
+```
+
+Open your repo → **Actions** tab → click the latest workflow run. You'll
+see two jobs:
+
+- ✅ **build** — builds the Docker image, pushes to GHCR (~2–3 min)
+- ✅ **deploy** — SSHs to the VPS, runs `docker compose pull && up -d` (~30s)
+
+When both are green, the new code is live on `https://yourdomain.com`.
+
+**If the build job fails:** read the Dockerfile build log. Usually a syntax
+error in the Dockerfile or a Node dependency that needs a system package.
+
+**If the deploy job fails:**
+
+- `Permission denied (publickey)` → the `VPS_SSH_KEY` secret is wrong, or
+  the public half isn't in `/home/deploy/.ssh/authorized_keys` on the VPS.
+- `pull access denied` → the `GHCR_READ_TOKEN` is wrong, or doesn't have
+  `read:packages`.
+- `docker: command not found` → SSH'ed as `deploy` but `deploy` isn't in
+  the `docker` group. Bootstrap Stage 2 fixes this; if you skipped it:
+  `sudo usermod -aG docker deploy && exit && ssh back in`.
+
+---
+
+## Stage 10 — Verify the dashboard works
+
+1. Visit `https://yourdomain.com` → log in with the credentials in your
+   production `.env`.
+2. Click **+ New profile**, add a test profile.
+3. Click **Edit** on the profile → form opens, fields are populated.
+
+**Don't click Fetch yet** — there's no logged-in browser session on the
+VPS until Stage 11.
+
+---
+
+## Stage 11 — Transfer login sessions to the VPS
+
+**What you're doing:** copying the `profiles/` folder (with the cookies and
+local storage you painstakingly logged in to acquire) from your Mac to
+the VPS, so the headless server can pick up where you left off.
+
+```bash
+# On your Mac, in the project root:
+rsync -avz --delete ./profiles/ \
+  deploy@YOUR_VPS_IP:/home/deploy/scraper-app/volumes/profiles/
+```
+
+Now back in the dashboard, click **Fetch** on a profile — should work
+exactly like local.
+
+For new logins after this, your options are:
+
+- **A (simplest)**: Login locally on your Mac → `rsync` again. Repeat as
+  sessions expire.
+- **B (best long-term)**: Install Xvfb + noVNC inside the app container so
+  the **Login** button in the dashboard works directly on the VPS. Punt
+  this until you actually need it.
+
+---
+
+## Stage 12 — Configure daily Mongo backups
+
+**What you're doing:** protecting the Mongo data so you can recover from
+disk loss or accidental deletion.
+
+SSH in as `deploy`, then `sudo -i` to become root:
+
+```bash
+nano /etc/cron.daily/mongo-backup
+```
+
+Paste this:
+
+```bash
+#!/usr/bin/env bash
+set -e
+docker exec scraper-app-mongo-1 mongodump --archive --gzip \
+  -u root -p "$MONGO_PASSWORD" --authenticationDatabase admin \
+  > /home/deploy/scraper-app/backups/mongo-$(date +%F).gz
+find /home/deploy/scraper-app/backups -name "mongo-*.gz" -mtime +7 -delete
+```
+
+Then:
+
+```bash
+chmod +x /etc/cron.daily/mongo-backup
+
+# Tell cron the Mongo password:
+echo 'MONGO_PASSWORD=THE_PASSWORD_FROM_ENV' >> /etc/environment
+# (re-login as root for it to take effect)
+
+# Test it now:
+MONGO_PASSWORD=THE_PASSWORD_FROM_ENV /etc/cron.daily/mongo-backup
+ls -lh /home/deploy/scraper-app/backups/
+# You should see a fresh mongo-YYYY-MM-DD.gz file.
+```
+
+Later, add an `rclone` job to copy `backups/` to S3 / Backblaze for offsite
+safety.
+
+---
+
+## You're done.
+
+From here on, your daily workflow is:
+
+```bash
+git add -p
+git commit -m "Fix X"
+git push origin main
+# Open Actions tab; wait 3-5 min; refresh dashboard.
+```
+
+That's it.
+
+---
+
+# Part C — Reference Material
+
+Everything below is for lookup — not stuff you need to read top-to-bottom.
+
+## 13. Image Versioning Strategy
+
+Every CI run produces multiple tags for the same image, so you can roll
+forward or back with surgical precision:
+
+| Tag | When set | Use for |
+|---|---|---|
+| `:sha-<short>` | every commit on `main` | The identifier of any deploy — immutable |
+| `:latest` | every commit on `main` | What the VPS pulls by default |
+| `:vX.Y.Z` | when you push a git tag `vX.Y.Z` | Explicit release |
+| `:vX.Y` | derived from the same tag | Floating to the latest patch |
+
+### Cut a release
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### Roll back on the VPS
+
+```bash
+cd ~/scraper-app
+export TAG=sha-abc1234        # or v0.9.4 — any tag that exists in GHCR
+docker compose pull
+docker compose up -d
+```
+
+---
+
+## 14. Production File Layout on the VPS
 
 ```
 /home/deploy/scraper-app/
-├── docker-compose.yml          ← only file you place by hand (or git clone the repo here)
-├── Caddyfile
+├── docker-compose.yml          ← placed by hand
+├── Caddyfile                   ← placed by hand
 ├── .env                        ← production secrets, NEVER in git
-├── backups/                    ← daily mongodump output (kept ~7 days)
+├── backups/                    ← daily mongodump output (7-day retention)
 └── volumes/
     ├── profiles/               ← persistent browser data (survives deploys)
     ├── mongo_data/             ← MongoDB data files (survives deploys)
-    └── caddy_data/             ← Let's Encrypt certs
+    ├── caddy_data/             ← Let's Encrypt certs
+    └── caddy_config/           ← Caddy state
 ```
 
-`docker compose pull && up -d` replaces the app container but **keeps all
-`volumes/*` mounts** — your Chrome sessions and Mongo data survive deployments.
-
-### Docker network
+`docker compose pull && up -d` replaces the app container but **keeps every
+`volumes/*` mount** — Chrome sessions and Mongo data survive deploys.
 
 ```
 ┌──────────────────────────────────────────┐
@@ -190,133 +579,265 @@ no Docker Hub needed.
   internet
 ```
 
-`mongo` is reachable from `app` as `mongodb://mongo:27017` and **not from the
-public internet**. No port for Mongo is published in `docker-compose.yml`.
-
 ---
 
-## 8. The Trickiest Bit: Manual Login on a Headless VPS
-
-The Login button in the dashboard opens a *visible* Chrome window. That works
-on your Mac. On a headless VPS, there's no display.
-
-Three options, pick one:
-
-| Option | Effort | UX |
-|---|---|---|
-| **A. Log in locally → copy `profiles/` to VPS** | Lowest | One-time per profile; manual via `scp` |
-| **B. Run Xvfb + noVNC on the VPS** | Medium | Click Login in dashboard, embedded noVNC iframe shows the browser. Cleanest long-term. |
-| **C. Run app locally just for login, then sync** | Lowest | Same as A but automated as a script |
-
-Start with **A** — fastest to ship. Move to **B** later when you're tired of
-`scp`.
-
-For A:
-
-```bash
-# After logging in locally to all profiles:
-rsync -avz --delete ./profiles/ deploy@$VPS:/home/deploy/scraper-app/volumes/profiles/
-```
-
----
-
-## 9. Production `.env` (changes vs. dev)
+## 15. Production `.env` (template)
 
 ```bash
 NODE_ENV=production
 PORT=3000
-# Internal Docker DNS — 'mongo' resolves to the Mongo container on the
-# private network; never exposed to the public internet.
-MONGO_URL=mongodb://root:STRONG_PASSWORD@mongo:27017/scraper?authSource=admin
-ADMIN_USERNAME=...                 # consider a stronger password than dev
-ADMIN_PASSWORD=...
-JWT_SECRET=...                     # generate fresh: long random
-HEADLESS=true                      # invisible Chrome
-BROWSER_CHANNEL=chrome             # use installed Chrome
 
-# Mongo container reads these to initialise its root user on first boot:
+# Internal Docker DNS — never exposed to the public internet
+MONGO_URL=mongodb://root:STRONG_PASSWORD@mongo:27017/scraper?authSource=admin
+
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=PICK_SOMETHING_STRONG
+JWT_SECRET=GENERATE_WITH_openssl_rand_base64_48
+
+HEADLESS=true
+BROWSER_CHANNEL=chrome
+
+# Mongo container reads these on first boot to initialise the root user.
+# MUST match the password embedded in MONGO_URL above.
 MONGO_INITDB_ROOT_USERNAME=root
 MONGO_INITDB_ROOT_PASSWORD=STRONG_PASSWORD
 ```
 
-The same `STRONG_PASSWORD` must appear in both `MONGO_URL` and
-`MONGO_INITDB_ROOT_PASSWORD`. Generate one fresh:
+Generate the strong password and JWT secret:
 
 ```bash
-openssl rand -base64 32
+openssl rand -base64 32   # Mongo password
+openssl rand -base64 48   # JWT secret
 ```
 
-### Backups
+---
 
-A daily `cron` job on the VPS dumps the database and prunes anything older
-than 7 days:
+## 16. Common Operations Cheat-Sheet (on the VPS)
 
 ```bash
-# /etc/cron.daily/mongo-backup  (chmod +x)
-docker exec scraper-mongo mongodump --archive --gzip \
-  -u root -p "$MONGO_PASSWORD" --authenticationDatabase admin \
-  > /home/deploy/scraper-app/backups/mongo-$(date +%F).gz
-find /home/deploy/scraper-app/backups -name "mongo-*.gz" -mtime +7 -delete
-```
+# See running containers + image versions
+docker compose ps
 
-Optional: `rclone` the `backups/` directory to S3 / Backblaze B2 / Google
-Drive for offsite copies.
+# Tail app logs
+docker compose logs -f app
+
+# Restart just the app (e.g. after editing .env)
+docker compose up -d app
+
+# Pull a specific version
+export TAG=sha-abc1234         # or v1.0.0
+docker compose pull app
+docker compose up -d app
+
+# Roll back to a previous build
+docker images ghcr.io/sltheesan/scraper-app     # find a prior tag
+export TAG=<prior_tag>
+docker compose up -d app
+
+# Mongo shell (inside the running container)
+docker exec -it scraper-app-mongo-1 mongosh \
+  -u root -p "$MONGO_PASSWORD" --authenticationDatabase admin
+```
 
 ---
 
-## 10. Full End-to-End Deploy Flow
+## 17. `Dockerfile` template
 
+```dockerfile
+FROM mcr.microsoft.com/playwright:v1.60.0-jammy
+
+# Install Google Chrome stable so channel:'chrome' works at runtime.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+ && wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+      | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+ && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+      > /etc/apt/sources.list.d/google-chrome.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends google-chrome-stable \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY src ./src
+COPY scripts ./scripts
+
+RUN mkdir -p /app/profiles && chown -R pwuser:pwuser /app
+USER pwuser
+
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["node", "src/server.js"]
 ```
-You on Mac:                       GitHub:                       VPS:
-─────────────                     ───────                       ────
-
-git push main  ───────────────►   Actions workflow fires
-                                          │
-                                          ▼
-                                  Build Docker image
-                                          │
-                                          ▼
-                                  Push to ghcr.io
-                                          │
-                                          ▼
-                                  SSH to VPS, run:        ───►  docker compose pull
-                                                                docker compose up -d
-                                                                docker image prune
-
-                                                                ▼
-                                                          Caddy keeps HTTPS,
-                                                          app reloads with new code,
-                                                          browser profiles intact,
-                                                          scheduler resumes
-```
-
-You watch GitHub Actions go green (~3–5 min total). Open
-`https://yourdomain.com` → dashboard live.
 
 ---
 
-## 11. Before You Start — Decisions to Make
+## 18. `.dockerignore` template
 
-1. **VPS provider + region** (§1) — pick one
-2. **Domain name** — needed for HTTPS (Caddy auto-issues Let's Encrypt). ~$10/yr. Buy from Cloudflare or Namecheap.
-3. **Login strategy** — A, B, or C from §8
-4. **GitHub repo visibility** — private (recommended)
-5. **Optional: Tailscale** — useful later if you ever want to bind MongoDB or SSH only to a private network instead of public IPs
+```
+node_modules
+profiles
+.env
+.env.*
+.git
+.github
+.vscode
+.idea
+.claude
+*.md
+```
 
 ---
 
-## 12. What to Provide When You're Ready
+## 19. `docker-compose.yml` template (lives on the VPS)
+
+```yaml
+services:
+  app:
+    image: ghcr.io/sltheesan/scraper-app:${TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - mongo
+    volumes:
+      - ./volumes/profiles:/app/profiles
+    networks: [internal]
+    expose: ["3000"]
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - ./volumes/mongo_data:/data/db
+    networks: [internal]
+    # No `ports:` — Mongo is private to the docker network.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy_data:/data
+      - ./volumes/caddy_config:/config
+    depends_on:
+      - app
+    networks: [internal]
+
+networks:
+  internal:
+```
+
+---
+
+## 20. `Caddyfile` template (lives on the VPS)
+
+```
+yourdomain.com {
+  encode gzip
+  reverse_proxy app:3000 {
+    # SSE for the live activity log — disable buffering.
+    flush_interval -1
+  }
+}
+```
+
+---
+
+## 21. `.github/workflows/deploy.yml` template
+
+```yaml
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch: {}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/scraper-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy on VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GITHUB_SHA,GITHUB_ACTOR
+          script: |
+            set -e
+            cd /home/deploy/scraper-app
+            export TAG=sha-${GITHUB_SHA::7}
+            echo "${{ secrets.GHCR_READ_TOKEN }}" \
+              | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
+            docker compose ps
+```
+
+---
+
+## 22. What to Provide When You're Ready to Wire This Up
 
 Send back:
 
-- VPS choice (e.g. "Hetzner CX31 in Singapore")
-- The domain name
-- Your login strategy (A / B / C)
+- VPS public IP (after Stage 1)
+- Your domain name (after Stage 3)
+- GitHub username + repo name (e.g. `sltheesan/scraper-app`)
+- Your login strategy (A or B from Stage 11)
 
-Then the following will be generated and committed in one go:
-
-- `Dockerfile`
-- `docker-compose.yml`
-- `Caddyfile`
-- `.dockerignore`
-- `.github/workflows/deploy.yml`
+I'll then commit the 5 deploy files (§17–§21) with your specific values
+already filled in — no copy-paste-and-edit dance.

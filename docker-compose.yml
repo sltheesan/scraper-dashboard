@@ -1,0 +1,45 @@
+# Production runtime composition for the Scraper Dashboard.
+# Lives on the VPS at /home/deploy/scraper-app/docker-compose.yml.
+# The VPS only ever runs `docker compose pull && up -d` — it never builds.
+
+services:
+  app:
+    image: ghcr.io/sltheesan/scraper-dashboard:${TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - mongo
+    volumes:
+      # Persistent browser profiles (cookies + local storage). Survives deploys.
+      - ./volumes/profiles:/app/profiles
+    networks: [internal]
+    expose: ["3000"]
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - ./volumes/mongo_data:/data/db
+    networks: [internal]
+    # Intentionally NO `ports:` — Mongo is only reachable from the `app`
+    # container at mongodb://mongo:27017, never from the public internet.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy_data:/data
+      - ./volumes/caddy_config:/config
+    depends_on:
+      - app
+    networks: [internal]
+
+networks:
+  internal:

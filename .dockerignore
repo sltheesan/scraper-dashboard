@@ -1,0 +1,13 @@
+node_modules
+profiles
+.env
+.env.*
+.git
+.github
+.vscode
+.idea
+.claude
+*.md
+Dockerfile
+docker-compose.yml
+Caddyfile

@@ -1,0 +1,16 @@
+# Caddy reverse-proxy + automatic HTTPS via Let's Encrypt.
+# Lives on the VPS at /home/deploy/scraper-app/Caddyfile.
+#
+# Before first deploy: replace `yourdomain.com` with your real domain
+# (e.g. scraper.example.com) and make sure its DNS A record points at the
+# VPS IP. Caddy will request a cert on the first HTTPS request.
+
+scraper.200m.tech {
+  encode gzip
+
+  reverse_proxy app:3000 {
+    # The dashboard's live activity log uses Server-Sent Events.
+    # Disable proxy buffering so events stream in real time.
+    flush_interval -1
+  }
+}

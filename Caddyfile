@@ -1,5 +1,5 @@
 # Caddy reverse-proxy + automatic HTTPS via Let's Encrypt.
-# Lives on the VPS at /home/deploy/scraper-app/Caddyfile.
+# Lives on the VPS at /root/scraper-app/Caddyfile.
 #
 # Before first deploy: replace `yourdomain.com` with your real domain
 # (e.g. scraper.example.com) and make sure its DNS A record points at the

@@ -118,11 +118,19 @@
           <h3 id="login-modal-title">Login session</h3>
         </div>
         <div class="login-body">
-          <p>A browser window has opened on this machine for
+          <p>A browser session has been opened for
             <strong id="login-profile-name"></strong>.</p>
           <ol class="muted">
-            <li>Complete the login in that window.</li>
-            <li>Navigate to wherever the data lives if you'd like to verify.</li>
+            <li>
+              <a href="/vnc/vnc.html?path=vnc/websockify&amp;autoconnect=true&amp;resize=remote"
+                 id="login-vnc-link"
+                 target="_blank" rel="noopener">
+                Open browser on VPS
+              </a>
+              — a new tab will show the headless Chrome inside the server.
+              (On your Mac you'll see the local Chrome window instead — this link still works but the local window is easier.)
+            </li>
+            <li>Complete the login in that browser.</li>
             <li>Come back here and click <strong>Save session</strong>.</li>
           </ol>
           <p id="login-status" class="muted"></p>

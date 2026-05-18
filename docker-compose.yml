@@ -18,7 +18,8 @@ services:
       # Persistent browser profiles (cookies + local storage). Survives deploys.
       - ./volumes/profiles:/app/profiles
     networks: [internal]
-    expose: ["3000"]
+    # 3000 = dashboard/API.  6080 = noVNC (auth-gated via Caddy).
+    expose: ["3000", "6080"]
 
   caddy:
     image: caddy:2

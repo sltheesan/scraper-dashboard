@@ -1,31 +1,24 @@
 # Production runtime composition for the Scraper Dashboard.
 # Lives on the VPS at /root/scraper-app/docker-compose.yml.
 # The VPS only ever runs `docker compose pull && up -d` — it never builds.
+#
+# MongoDB is NOT a container here — it runs on the host (apt-installed,
+# systemd-managed). The app reaches it at host.docker.internal:27017.
 
 services:
   app:
     image: ghcr.io/sltheesan/scraper-dashboard:${TAG:-latest}
     restart: unless-stopped
     env_file: .env
-    depends_on:
-      - mongo
+    extra_hosts:
+      # Maps host.docker.internal -> the host's gateway IP. Lets the app
+      # connect to the host-installed MongoDB at host.docker.internal:27017.
+      - "host.docker.internal:host-gateway"
     volumes:
       # Persistent browser profiles (cookies + local storage). Survives deploys.
       - ./volumes/profiles:/app/profiles
     networks: [internal]
     expose: ["3000"]
-
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
-    volumes:
-      - ./volumes/mongo_data:/data/db
-    networks: [internal]
-    # Intentionally NO `ports:` — Mongo is only reachable from the `app`
-    # container at mongodb://mongo:27017, never from the public internet.
 
   caddy:
     image: caddy:2

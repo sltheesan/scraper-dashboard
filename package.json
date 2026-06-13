@@ -10,6 +10,10 @@
     "login": "node scripts/login.js"
   },
   "nodemonConfig": {
+    "watch": [
+      "src",
+      "scripts"
+    ],
     "ignore": [
       "profiles/**",
       "node_modules/**",

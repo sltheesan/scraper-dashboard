@@ -19,17 +19,30 @@ export const COMMON_LABELS = {
   totalWithdrawalAmount: 'Total Withdrawal Amount',
 };
 
-// Fixed HTML id map for zoomwlb-style dashboards.
-// commonKey -> id attribute on the page (case-sensitive — these are camelCase
-// on the live page, despite the dashboard rendering the labels in ALL CAPS).
-export const ZOOMWLB_FIELD_IDS = {
-  newRegistrationCount: 'todayNewPlayer',
-  newDepositCount: 'todayFirstDeposit',
-  totalDepositCount: 'todayDepositSuccessCount',
-  totalDepositAmount: 'todayDepositSuccessAmount',
-  totalWithdrawalCount: 'todayWithdrawalSuccessCount',
-  totalWithdrawalAmount: 'todayWithdrawalSuccessAmount',
+// The zoomwlb dashboard renders EVERY period's values simultaneously, in
+// separate elements that share a suffix and differ only by a period prefix:
+//   <span id="todayNewPlayer">     <span id="yesterdayNewPlayer">  …
+// So fetching "yesterday" is just reading the yesterday* ids on the same page —
+// no navigation, filter select, or Apply click required.
+const ZOOMWLB_FIELD_SUFFIXES = {
+  newRegistrationCount: 'NewPlayer',
+  newDepositCount: 'FirstDeposit',
+  totalDepositCount: 'DepositSuccessCount',
+  totalDepositAmount: 'DepositSuccessAmount',
+  totalWithdrawalCount: 'WithdrawalSuccessCount',
+  totalWithdrawalAmount: 'WithdrawalSuccessAmount',
 };
+
+// commonKey -> page element id for the given period ('today' | 'yesterday').
+export function zoomwlbFieldIds(period = 'today') {
+  const prefix = period === 'yesterday' ? 'yesterday' : 'today';
+  return Object.fromEntries(
+    Object.entries(ZOOMWLB_FIELD_SUFFIXES).map(([key, suffix]) => [key, prefix + suffix]),
+  );
+}
+
+// Default (today) map — kept for callers that don't need a specific period.
+export const ZOOMWLB_FIELD_IDS = zoomwlbFieldIds('today');
 
 export function emptyCommonData() {
   return Object.fromEntries(COMMON_FIELDS.map((k) => [k, null]));

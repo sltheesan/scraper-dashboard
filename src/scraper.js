@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { chromium } from 'playwright';
-import { ZOOMWLB_FIELD_IDS } from './parsers/common.js';
+import { zoomwlbFieldIds } from './parsers/common.js';
 
 export const PROFILES_ROOT = path.resolve('profiles');
 const COOKIE_FILE = 'session-cookies.json';
@@ -221,8 +221,12 @@ async function extractDataFields(page, dataFields) {
 /**
  * Run a single fetch cycle for a profile using an EXISTING context.
  * The caller (typically the context pool) is responsible for the context lifecycle.
+ *
+ * `period`: 'today' (default) or 'yesterday'. For zoomwlb, the dashboard renders
+ * every period's values at once in separate elements, so we just read the
+ * matching id set (today* vs yesterday*) — no navigation/filter needed.
  */
-export async function runFetch(profile, context, { log } = {}) {
+export async function runFetch(profile, context, { log, period = 'today' } = {}) {
   // Restore cookies persisted during login (no-op if already in this context).
   const restored = await restoreCookies(profile, context);
 
@@ -261,11 +265,15 @@ export async function runFetch(profile, context, { log } = {}) {
     await btn.click();
   }
 
+  // The zoomwlb dashboard renders all periods' values up-front; pick the id set
+  // for the requested period (today* or yesterday*).
+  const zoomwlbIds = profile.kind === 'zoomwlb' ? zoomwlbFieldIds(period) : null;
+
   // Wait for the expected data to actually be in the DOM. Different per kind:
   //  - cgaming: a table row appears after the button click.
-  //  - zoomwlb: dashboard widget ids (#TODAYNEWPLAYER etc.) get populated by AJAX.
+  //  - zoomwlb: dashboard widget ids get populated by AJAX.
   if (profile.kind === 'zoomwlb') {
-    const expectedIds = Object.values(ZOOMWLB_FIELD_IDS);
+    const expectedIds = Object.values(zoomwlbIds);
     const waits = [];
     for (const frame of page.frames()) {
       for (const id of expectedIds) {
@@ -286,7 +294,7 @@ export async function runFetch(profile, context, { log } = {}) {
   // For zoomwlb, extract the fixed set of common-schema IDs (overrides any
   // per-profile dataFields). For other kinds, fall back to user dataFields.
   const fieldDefs = profile.kind === 'zoomwlb'
-    ? Object.entries(ZOOMWLB_FIELD_IDS).map(([commonKey, id]) => ({ id, label: commonKey }))
+    ? Object.entries(zoomwlbIds).map(([commonKey, id]) => ({ id, label: commonKey }))
     : (profile.dataFields || []);
 
   const [tables, fields, title] = await Promise.all([

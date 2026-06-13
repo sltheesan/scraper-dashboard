@@ -3,9 +3,15 @@ import { config } from '../config.js';
 import { Profile, PROFILE_STATUSES, PROFILE_KINDS } from '../models/Profile.js';
 import { openContext, persistCookies } from '../scraper.js';
 import { acquireContext, releaseContext } from '../contextPool.js';
-import { runAndParse } from '../scrapeRunner.js';
+import { runAndParse, fetchYesterday } from '../scrapeRunner.js';
 import { reschedule } from '../scheduler.js';
 import { logEvent } from '../logBroker.js';
+import { recordActivity } from '../activityLog.js';
+import { sendSessionAlert } from '../telegram.js';
+
+// Audit-log helper for admin actions on these routes.
+const audit = (request, action, target, details) =>
+  recordActivity({ actorType: 'admin', actor: request.user?.username || '', action, target, details });
 
 // In-memory map of profileId -> { context, page, openedAt }.
 // Lost on server restart; that's fine for dev (any orphaned browsers can be
@@ -74,6 +80,7 @@ export default async function profileRoutes(fastify) {
       try {
         const profile = await Profile.create(data);
         reschedule(profile._id).catch(() => {});
+        audit(request, 'profile.create', profile.name, `kind=${profile.kind}`);
         return reply.code(201).send(toClient(profile));
       } catch (err) {
         if (err.code === 11000) {
@@ -101,6 +108,7 @@ export default async function profileRoutes(fastify) {
         );
         if (!profile) return reply.code(404).send({ error: 'not found' });
         reschedule(profile._id).catch(() => {});
+        audit(request, 'profile.update', profile.name);
         return toClient(profile);
       } catch (err) {
         if (err.code === 11000) {
@@ -116,6 +124,7 @@ export default async function profileRoutes(fastify) {
     if (!profile) return reply.code(404).send({ error: 'not found' });
     await releaseContext(request.params.id);
     reschedule(request.params.id).catch(() => {});
+    audit(request, 'profile.delete', profile.name);
     return { ok: true };
   });
 
@@ -149,6 +158,7 @@ export default async function profileRoutes(fastify) {
     const id = String(profile._id);
     loginSessions.set(id, { context, page, openedAt: new Date() });
     logEvent({ source: 'login', profile: profile.name, message: 'Login window opened' });
+    audit(request, 'profile.login_open', profile.name);
 
     // Auto-cleanup if the user closes the browser window manually.
     context.on('close', async () => {
@@ -207,6 +217,7 @@ export default async function profileRoutes(fastify) {
       profile.lastLoginAt = new Date();
       await profile.save();
       logEvent({ source: 'login', profile: profile.name, message: 'Login session saved' });
+      audit(request, 'profile.login_save', profile.name, `${savedCookieCount} cookies`);
     }
     return { ok: true };
   });
@@ -223,19 +234,30 @@ export default async function profileRoutes(fastify) {
 
   // Manual fetch — opens browser via context pool, navigates, extracts,
   // returns a preview. Does NOT persist anything; storage is the scheduler's job.
-  fastify.post('/:id/fetch', async (request, reply) => {
+  fastify.post('/:id/fetch', {
+    schema: {
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { period: { type: 'string', enum: ['today', 'yesterday'] } },
+      },
+    },
+    handler: async (request, reply) => {
     const profile = await Profile.findById(request.params.id);
     if (!profile) return reply.code(404).send({ error: 'not found' });
 
-    logEvent({ source: 'manual', profile: profile.name, message: 'Manual fetch started' });
+    const period = request.body?.period === 'yesterday' ? 'yesterday' : 'today';
+    logEvent({ source: 'manual', profile: profile.name, message: `Manual fetch started (${period})` });
 
     try {
-      const { result, parsed } = await runAndParse(profile, {
-        headless: config.headless,
-        log: request.log,
-      });
+      // Yesterday is served from the archive (instant) with a live-scrape
+      // fallback that also stores it. Today is always live.
+      const { result, parsed, cached } = period === 'yesterday'
+        ? await fetchYesterday(profile, { headless: config.headless, log: request.log })
+        : { ...(await runAndParse(profile, { headless: config.headless, log: request.log, period })), cached: false };
 
       if (!result.loggedIn) {
+        const wasOut = profile.status === 'logged_out';
         profile.status = 'logged_out';
         await profile.save();
         logEvent({
@@ -244,6 +266,7 @@ export default async function profileRoutes(fastify) {
           profile: profile.name,
           message: 'Manual fetch: session expired',
         });
+        if (!wasOut) sendSessionAlert(profile, 'manual fetch');
         return reply.code(409).send({
           error: 'logged_out',
           message: result.message,
@@ -251,22 +274,28 @@ export default async function profileRoutes(fastify) {
         });
       }
 
-      profile.status = 'logged_in';
-      await profile.save();
+      if (!cached) {
+        profile.status = 'logged_in';
+        await profile.save();
+      }
       logEvent({
         source: 'manual',
         profile: profile.name,
-        message: parsed ? 'Manual fetch: preview ready (not saved)' : 'Manual fetch: no values',
+        message: cached
+          ? 'Yesterday served from archive'
+          : parsed ? 'Manual fetch: preview ready' : 'Manual fetch: no values',
       });
+      audit(request, 'fetch', profile.name, `${period}${cached ? ' (archive)' : ''}`);
 
       return {
         ok: true,
         kind: profile.kind,
+        cached: !!cached,
         url: result.url,
-        title: result.title,
-        frameCount: result.frameCount,
-        tables: result.tables,
-        fields: result.fields,
+        title: result.title || '',
+        frameCount: result.frameCount || 0,
+        tables: result.tables || [],
+        fields: result.fields || {},
         parsed: parsed ? { ...parsed, kind: profile.kind } : null,
       };
     } catch (err) {
@@ -281,5 +310,6 @@ export default async function profileRoutes(fastify) {
       });
       return reply.code(500).send({ error: 'fetch_failed', message: err.message });
     }
+    },
   });
 }

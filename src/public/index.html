@@ -11,6 +11,8 @@
       <h1>Scraper Dashboard</h1>
       <div class="topbar-right">
         <span id="user" class="muted"></span>
+        <button id="open-activity" class="ghost">Activity Log</button>
+        <button id="open-telegram" class="ghost">Telegram</button>
         <button id="open-settings" class="ghost">Settings</button>
         <button id="logout" class="ghost">Sign out</button>
       </div>
@@ -27,6 +29,30 @@
           No profiles yet. Click <strong>New profile</strong> to add one.
         </div>
 
+        <div id="profiles-toolbar" class="toolbar" hidden>
+          <input type="search" id="profile-search" class="toolbar-search"
+                 placeholder="Search name or URL…" autocomplete="off" />
+          <select id="filter-kind" title="Filter by kind">
+            <option value="">All kinds</option>
+            <option value="cgaming">cgaming</option>
+            <option value="zoomwlb">zoomwlb</option>
+          </select>
+          <select id="filter-status" title="Filter by status">
+            <option value="">All statuses</option>
+            <option value="idle">idle</option>
+            <option value="logged_in">logged_in</option>
+            <option value="scraping">scraping</option>
+            <option value="logged_out">logged_out</option>
+            <option value="error">error</option>
+          </select>
+          <select id="page-size" title="Rows per page">
+            <option value="10">10 / page</option>
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+            <option value="0">All</option>
+          </select>
+        </div>
+
         <table id="profiles-table" hidden>
           <thead>
             <tr>
@@ -40,6 +66,15 @@
           </thead>
           <tbody id="profiles-body"></tbody>
         </table>
+
+        <div id="pagination" class="pagination" hidden>
+          <span id="page-info" class="muted"></span>
+          <div class="page-controls">
+            <button id="page-prev" class="ghost small">‹ Prev</button>
+            <span id="page-numbers"></span>
+            <button id="page-next" class="ghost small">Next ›</button>
+          </div>
+        </div>
       </section>
 
       <section class="card">
@@ -102,11 +137,136 @@
             </label>
           </fieldset>
 
+          <fieldset class="fields-block">
+            <legend>Backup &amp; Restore</legend>
+            <p class="muted" style="margin: 0 0 10px; font-size: 12px;">
+              Download the full database as a JSON file, or restore from one.
+              Restore <strong>replaces</strong> all current data — confirm before applying.
+              Browser session folders are <em>not</em> included; profiles need re-login after restore on a new machine.
+            </p>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <button type="button" id="backup-download">Download backup</button>
+              <input type="file" id="backup-file" accept=".json,application/json" style="flex:1; min-width:180px;" />
+              <button type="button" id="backup-restore" class="ghost danger">Restore</button>
+            </div>
+            <p id="backup-status" class="muted" style="font-size:12px; margin-top:8px; word-break:break-word;"></p>
+          </fieldset>
+
           <div class="modal-actions">
             <button type="button" class="ghost" id="settings-cancel">Cancel</button>
             <button type="button" id="settings-save">Save</button>
           </div>
           <p id="settings-error" class="error" hidden></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Activity Log modal (persistent audit trail) -->
+    <div id="activity-modal" class="modal" hidden>
+      <div class="modal-card modal-wide">
+        <div class="modal-head">
+          <h3>Activity Log</h3>
+          <button class="ghost" id="activity-close">×</button>
+        </div>
+        <div class="fetch-body">
+          <div class="toolbar" style="margin-bottom:12px;">
+            <select id="activity-filter">
+              <option value="">All activity</option>
+              <option value="admin">Admin (dashboard)</option>
+              <option value="telegram">Telegram users</option>
+            </select>
+          </div>
+          <div class="table-wrap" style="max-height:50vh;">
+            <table class="result-table">
+              <thead>
+                <tr>
+                  <th>Time (ICT)</th>
+                  <th>Who</th>
+                  <th>Action</th>
+                  <th>Target</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody id="activity-body"></tbody>
+            </table>
+          </div>
+          <div id="activity-pagination" class="pagination">
+            <span id="activity-info" class="muted"></span>
+            <div class="page-controls">
+              <button id="activity-prev" class="ghost small">‹ Prev</button>
+              <button id="activity-next" class="ghost small">Next ›</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telegram bot modal -->
+    <div id="telegram-modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>Telegram bot</h3>
+          <button class="ghost" id="telegram-close">×</button>
+        </div>
+        <div class="login-body">
+          <p id="telegram-status" class="muted" style="margin-top:0;"></p>
+
+          <fieldset class="fields-block">
+            <legend>Reply format</legend>
+            <p class="muted" style="font-size:12px; margin:0 0 10px;">
+              What the bot sends when you tap a profile. Pick one or both.
+            </p>
+            <label class="inline-row">
+              <input type="checkbox" id="telegram-sendimage" />
+              Send image card
+            </label>
+            <label class="inline-row" style="margin-bottom:0;">
+              <input type="checkbox" id="telegram-sendtext" />
+              Send text summary
+            </label>
+          </fieldset>
+
+          <label class="inline-row">
+            <input type="checkbox" id="telegram-restricted" />
+            Restrict access to the chat IDs below
+          </label>
+          <p class="muted" style="font-size:12px; margin-top:0;">
+            When off, anyone who messages the bot can fetch your data.
+            When on, only the chat IDs listed here are served.
+          </p>
+
+          <fieldset class="fields-block">
+            <legend>Session-expired alerts</legend>
+            <p class="muted" style="font-size:12px; margin:0 0 10px;">
+              When a profile logs out, send a Telegram alert to each chat ID below.
+              Empty list = alerts disabled. Each recipient must have started the bot first.
+            </p>
+            <div id="telegram-alerts"></div>
+            <div class="field-row" style="grid-template-columns: 1fr auto;">
+              <input id="telegram-newalert" placeholder="Alert chat ID (e.g. 123456789)"
+                     inputmode="numeric" autocomplete="off" />
+              <button type="button" id="telegram-addalert" class="small">Add</button>
+            </div>
+            <div style="margin-top:8px; text-align:right;">
+              <button type="button" id="telegram-testalert" class="ghost small">Send test to all</button>
+            </div>
+          </fieldset>
+
+          <fieldset class="fields-block">
+            <legend>Allowed users</legend>
+            <div id="telegram-allow"></div>
+            <div class="field-row" style="grid-template-columns: 1fr auto;">
+              <input id="telegram-newentry" placeholder="Chat ID (123456789) or @username"
+                     autocomplete="off" />
+              <button type="button" id="telegram-addentry" class="small">Add</button>
+            </div>
+            <p class="muted" style="font-size:12px; margin:8px 0 0;">
+              Add a numeric chat ID or an @username. Don't know yours? Message the bot —
+              it replies with both. Note: usernames can change; chat ID never does.
+            </p>
+          </fieldset>
+
+          <p id="telegram-error" class="error" hidden></p>
         </div>
       </div>
     </div>

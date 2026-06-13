@@ -119,6 +119,51 @@ button.ghost:hover { background: var(--surface); }
   border-radius: 8px;
 }
 
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.toolbar-search {
+  flex: 1 1 240px;
+  min-width: 200px;
+  padding: 9px 12px;
+  font-size: 14px;
+}
+.toolbar select {
+  padding: 9px 12px;
+  font-size: 14px;
+}
+
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.page-controls { display: flex; align-items: center; gap: 6px; }
+.page-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 11px;
+  font-size: 13px;
+  border-radius: 6px;
+  min-width: 34px;
+}
+.page-btn:hover { background: var(--bg); }
+.page-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.page-gap { color: var(--muted); padding: 0 4px; }
+.no-results { text-align: center; padding: 28px; }
+
 table {
   width: 100%;
   border-collapse: collapse;

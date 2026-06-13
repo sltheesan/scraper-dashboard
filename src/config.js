@@ -22,4 +22,7 @@ export const config = {
   jwtSecret: process.env.JWT_SECRET,
   isProd: process.env.NODE_ENV === 'production',
   headless,
+  // Telegram bot token from @BotFather. Optional — when unset, the bot is
+  // simply not started. The access allowlist is managed in the dashboard.
+  telegramToken: process.env.TELEGRAM_BOT_TOKEN || '',
 };

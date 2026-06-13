@@ -13,6 +13,7 @@ import { runAndParse, saveScrape } from './scrapeRunner.js';
 import { runRefresh } from './scraper.js';
 import { acquireContext } from './contextPool.js';
 import { logEvent } from './logBroker.js';
+import { sendSessionAlert } from './telegram.js';
 
 const fetchTimers = new Map();   // profileId(str) -> timeout
 const refreshTimers = new Map(); // profileId(str) -> timeout
@@ -103,6 +104,7 @@ async function runFetchTick(profileId) {
     });
 
     if (!result.loggedIn) {
+      const wasOut = profile.status === 'logged_out';
       profile.status = 'logged_out';
       await profile.save();
       logger.warn?.({ profile: profile.name }, 'scheduled fetch: session expired');
@@ -112,6 +114,7 @@ async function runFetchTick(profileId) {
         profile: profile.name,
         message: 'Session expired — Login required',
       });
+      if (!wasOut) sendSessionAlert(profile, 'scheduled fetch');
     } else {
       const saved = await saveScrape(profile, parsed, result);
       profile.status = 'logged_in';
@@ -165,6 +168,7 @@ async function runRefreshTick(profileId) {
     const result = await runRefresh(profile, context, { log: logger });
 
     if (!result.loggedIn) {
+      const wasOut = profile.status === 'logged_out';
       profile.status = 'logged_out';
       await profile.save();
       logEvent({
@@ -173,6 +177,7 @@ async function runRefreshTick(profileId) {
         profile: profile.name,
         message: 'Session expired — Login required',
       });
+      if (!wasOut) sendSessionAlert(profile, 'session refresh');
     } else {
       profile.status = 'logged_in';
       profile.lastLoginAt = new Date(); // session is alive

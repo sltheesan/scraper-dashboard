@@ -12,7 +12,8 @@
       "Bash(node --check src/parsers/cgaming.js)",
       "Bash(node --check src/models/Scrape.js)",
       "Bash(node --input-type=module -e ' *)",
-      "Bash(node --check src/parsers/zoomwlb.js)"
+      "Bash(node --check src/parsers/zoomwlb.js)",
+      "Bash(node tmp-test-restore.mjs)"
     ]
   }
 }

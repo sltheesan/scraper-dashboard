@@ -188,8 +188,11 @@ async function restoreBackup() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.message || body.error || `HTTP ${res.status}`);
-    const total = Object.values(body.summary || {}).reduce((a, b) => a + b, 0);
-    const lines = Object.entries(body.summary || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+    const summary = body.summary || {};
+    const total = Object.values(summary).reduce((a, v) => a + (v.count || 0), 0);
+    const lines = Object.entries(summary)
+      .map(([k, v]) => `${k}: ${v.count} (${v.action})`)
+      .join(', ');
     backupStatus.textContent = `Restored ${total} docs — ${lines}`;
     backupFile.value = '';
     // Refresh the in-memory profile table so it matches the restored DB.

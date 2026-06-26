@@ -4,9 +4,9 @@ description: >-
   Complete reference for the Multi-Profile Browser Scraper Dashboard project
   (Node/Fastify/Playwright/MongoDB). Use when working on this codebase to recall
   architecture, modules, scheduled jobs (cron), exported functions, API routes,
-  data models, requirements, run/setup steps, and known hazards (esp. the
-  destructive backup-restore). Load before adding features, debugging, or
-  starting/operating the server.
+  data models, requirements, run/setup steps, VPS/Docker deployment, and known
+  hazards (esp. the destructive backup-restore). Load before adding features,
+  debugging, deploying, or starting/operating the server.
 ---
 
 # Dashboard Scraper — Project Skill
@@ -153,7 +153,44 @@ activity logs, both settings singletons). Session folders on disk survived.
 
 ---
 
-## 9. Conventions & gotchas
+## 9. Cloud / VPS deployment (planned)
+
+Full step-by-step lives in [DEPLOY-PLAN.md](../../../DEPLOY-PLAN.md). Key
+**decisions** (do not silently change these):
+
+- **MongoDB runs NATIVE on the VPS**, not dockerized — same as the PC — for easy
+  server-to-server data migration. `MONGO_URL=mongodb://127.0.0.1:27017/scraper`.
+- **Only the app is dockerized**, single container, **`network_mode: host`** so
+  the container reaches the native Mongo at `127.0.0.1` with the PC's exact URL.
+- **`profiles/` is a plain host directory bind-mounted** to `/app/profiles`
+  (`/opt/scraper/profiles` → `/app/profiles`) — NOT a Docker volume — so sessions
+  persist across rebuilds and are easy to copy. `.env` is a host file via `env_file`.
+- The container includes the **Xvfb + fluxbox + x11vnc + websockify/noVNC**
+  stack ([docker/supervisord.conf](../../../docker/supervisord.conf)) so the
+  **headed** login flow works with no physical display; **Caddy** auth-gates noVNC.
+- Cloud is **fully isolated** from the PC: own DB, own `profiles/`, own Telegram
+  bot token. The PC keeps running untouched during cloud testing.
+
+**Login on a headless server:** the login route forces a *visible* Chrome
+(`openContext(profile, { headless:false })` in [routes/profiles.js](../../../src/routes/profiles.js#L149)).
+A bare VPS has no display → headed Chrome fails. The virtual desktop (Xvfb `:99`)
+plus noVNC lets you complete logins **in your browser**; cookies persist to the
+bind-mounted `profiles/`. Scheduled scraping is headless and needs no display.
+
+**Docker data-persistence rule:** data survives container rebuild/upgrade/`down`
+**iff** it's on a named volume or host bind mount. `docker compose down -v` /
+`docker volume rm` DESTROY it. Here Mongo is native + `profiles/` is a host dir,
+so the app container is disposable; the real wipe risk is the app-level
+`restoreAll` bug (§8), which Docker does NOT protect against.
+
+**Telegram gotcha:** one bot token = one long-poller. Cloud + PC on the same
+token both break with 409 conflicts → cloud must use a **separate test token**
+(or leave it blank).
+
+**Status:** plan only; not yet built. Phase 0 (harden `restoreAll`) must land
+before any data moves.
+
+## 10. Conventions & gotchas
 
 - **Plan-first**: for non-trivial work, explain the approach and confirm before coding.
 - **Timezone**: everything is GMT+7; new date logic must format/compare in `Asia/Bangkok`, not host-local assumptions.

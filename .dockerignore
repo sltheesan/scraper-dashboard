@@ -1,0 +1,18 @@
+# Keep the build context small and never bake local state/secrets into the image.
+.git
+.gitignore
+node_modules
+profiles
+backups
+.env
+.env.local
+*.log
+.vscode
+.idea
+.DS_Store
+__MACOSX
+DEPLOY-PLAN.md
+README.md
+ci.md
+plan.md
+DevOps.md

@@ -1,0 +1,25 @@
+# App-only stack. MongoDB runs natively on the VPS (not here), reached via
+# host networking at 127.0.0.1:27017 — identical to the PC's MONGO_URL.
+#
+# Stateful data lives OUTSIDE this container, on the host:
+#   /opt/scraper/profiles  -> browser session folders (bind mount)
+#   /opt/scraper/.env      -> config/secrets (env_file)
+# So the container is disposable: rebuild/upgrade freely without data loss.
+
+services:
+  app:
+    build: .
+    image: scraper-app:latest
+    container_name: scraper-app
+    # Share the host network so the container reaches native Mongo at
+    # 127.0.0.1:27017 and binds 3000/6080 directly on the host (firewalled).
+    network_mode: host
+    env_file: /opt/scraper/.env
+    environment:
+      - DISPLAY=:99
+    volumes:
+      # Browser sessions persist on the host as plain files (easy to copy).
+      - /opt/scraper/profiles:/app/profiles
+    # Chrome needs more shared memory than Docker's 64 MB default or it crashes.
+    shm_size: "1gb"
+    restart: unless-stopped

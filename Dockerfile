@@ -31,10 +31,9 @@ RUN npx playwright install chrome
 # App source.
 COPY . .
 
-# Guarantee a stable node path for supervisord, and make noVNC open straight
-# into the viewer.
-RUN ln -sf "$(command -v node)" /usr/bin/node \
-  && ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html
+# Make noVNC open straight into the viewer. (node is already at /usr/bin/node in
+# the Playwright image, which is what supervisord invokes.)
+RUN ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html
 
 # The runtime user shipped by the Playwright image is `pwuser` (uid 1000); the
 # app + browsers run as it. supervisord itself starts as root (it drops to

@@ -2,7 +2,7 @@
 
 A self-hosted system that keeps multiple authenticated browser sessions alive, scrapes their dashboards on demand and on a schedule, stores daily results in MongoDB, and exposes everything through a web dashboard **and** a Telegram bot.
 
-Runs locally on a single PC — no Docker, no VPS, no CI/CD.
+Runs locally on a single PC (no Docker required), or on a VPS in a single Docker container with MongoDB native on the host — see **[Deployment (VPS + Docker)](#deployment-vps--docker)**.
 
 ## Overview
 
@@ -193,6 +193,62 @@ Open **http://localhost:3000** and sign in with `ADMIN_USERNAME` / `ADMIN_PASSWO
 | `BROWSER_CHANNEL` | `chrome` (default) or empty to use bundled Chromium |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather; leave blank to disable the bot |
 | `TZ` *(optional)* | defaults to `Asia/Bangkok` (GMT+7) if unset |
+
+## Deployment (VPS + Docker)
+
+For remote hosting, the app runs in a **single Docker container** while **MongoDB runs natively on the VPS**. All state lives on the host, so the container is disposable — rebuild or recreate it freely without losing data.
+
+- **App container:** Node + Playwright/Chrome + an in-container virtual desktop (Xvfb + fluxbox + x11vnc + noVNC, orchestrated by supervisord) so the *headed* manual-login flow works on a server with no monitor (drive the browser via noVNC).
+- **`network_mode: host`:** the container reaches native Mongo at `127.0.0.1:27017` with the same `MONGO_URL` as local; ports `3000` (dashboard) and `6080` (noVNC) bind on the host and stay firewalled (reached via an SSH tunnel or an authenticated gateway).
+- **Host-side state (survives rebuilds):** `/opt/scraper/profiles` → bind-mounted to `/app/profiles`; `/opt/scraper/.env` → `env_file`.
+- **Deploy branch:** `ScraperVPS`. Repo is cloned to `/opt/scraper/app` on the VPS.
+
+### Update & redeploy runbook
+
+**1. Push code (on your PC)**
+```bash
+git checkout ScraperVPS
+git add -A
+git commit -m "your message"
+git push origin ScraperVPS          # first time: git push -u origin ScraperVPS
+```
+
+**2. Pull on the VPS**
+```bash
+cd /opt/scraper/app
+git fetch origin
+git checkout ScraperVPS             # if not already on it
+git pull origin ScraperVPS
+git log --oneline -1                # confirm the expected commit
+```
+> GitHub auth = your username + a **Personal Access Token**. To stop re-typing it: `git config --global credential.helper store` (caches after the next successful pull).
+
+**3. Modify the env file (on the VPS)**
+```bash
+nano /opt/scraper/.env              # edit, then Ctrl+O, Enter, Ctrl+X
+```
+`.env` lives on the host; changes take effect only after recreating the container (next step).
+
+**4. Rebuild / recreate — pick the scenario** (run from `/opt/scraper/app`)
+
+| Situation | Command |
+|---|---|
+| **Env changed only** (no code change) | `docker compose up -d --force-recreate` |
+| **Code changed** (new commit pulled) | `docker compose up -d --build` |
+| **Full clean rebuild** (remove old, build fresh) | `docker compose down && docker compose build --no-cache && docker compose up -d` |
+
+> ⚠️ **Never add `-v` to `docker compose down`.** There are no data volumes here (Mongo is native, `profiles/` is a host bind-mount), so `down` is safe — but `down -v` is the habit to avoid. Optional disk cleanup after several rebuilds: `docker image prune -f`.
+
+**5. Verify**
+```bash
+docker compose ps                   # STATUS should be "Up"
+docker compose logs --tail=25       # expect "MongoDB connected" + "Server listening"
+```
+
+### Data safety on redeploy
+- `profiles/` sessions and the native MongoDB live **outside** the container, so rebuilding/removing/recreating never loses data or logs you out of the scraped sites.
+- A plain `docker compose restart` / `docker restart` does **not** re-read `.env` — use `--force-recreate` (env change) or `--build` (code change).
+- Restarts are graceful; the startup catch-up avoids re-scraping a completed day.
 
 ## Dashboard
 

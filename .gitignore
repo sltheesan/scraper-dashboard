@@ -10,3 +10,9 @@ backups/
 myrecords.txt
 ci.md
 plan.md
+
+# Locally-copied global skills: kept on disk for development, not committed.
+# The project's own skill (dashboard-scraper-skill) stays tracked via the
+# negation below.
+.claude/skills/*
+!.claude/skills/dashboard-scraper-skill/

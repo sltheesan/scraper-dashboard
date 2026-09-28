@@ -28,17 +28,18 @@ export default async function backupRoutes(fastify) {
     bodyLimit: 50 * 1024 * 1024,
     handler: async (request, reply) => {
       try {
-        const summary = await restoreAll(request.body);
-        const total = Object.values(summary).reduce((a, b) => a + b, 0);
-        const lines = Object.entries(summary).map(([k, v]) => `${k}=${v}`).join(', ');
-        logEvent({ level: 'warn', source: 'backup', message: `Restore complete — ${total} docs (${lines})` });
+        const { restored, skipped, snapshot } = await restoreAll(request.body);
+        const total = Object.values(restored).reduce((a, b) => a + b, 0);
+        const lines = Object.entries(restored).map(([k, v]) => `${k}=${v}`).join(', ');
+        const skippedNote = skipped.length ? ` · preserved (not in backup): ${skipped.join(', ')}` : '';
+        logEvent({ level: 'warn', source: 'backup', message: `Restore complete — ${total} docs (${lines})${skippedNote}` });
         recordActivity({
           actorType: 'admin',
           actor: request.user?.username || '',
           action: 'backup.restore',
-          details: lines,
+          details: `${lines}${skippedNote}`,
         });
-        return { ok: true, summary };
+        return { ok: true, restored, skipped, snapshot };
       } catch (err) {
         request.log.error({ err }, 'restore failed');
         return reply.code(400).send({ error: 'restore_failed', message: err.message });

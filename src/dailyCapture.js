@@ -1,32 +1,28 @@
 // Daily "yesterday" archive job.
 //
-// Yesterday's totals are immutable, and the source dashboard only ever exposes
-// a single prior day — so we capture each zoomwlb profile's yesterday once per
-// day and store it. After that, every "Yesterday" request is an instant DB read
-// (see fetchYesterday). Today is never archived here; it stays live.
+// Yesterday's totals are immutable once the platform's business day closes (at
+// the configurable cutover, default 11:00 ICT). We capture each profile's
+// yesterday once — shortly AFTER that platform's cutover, so the day is frozen
+// and complete — and store it. After that, every "Yesterday" request is an
+// instant DB read (see fetchYesterday). Today is never archived here; it stays
+// live.
 
 import { Profile } from './models/Profile.js';
 import { Scrape } from './models/Scrape.js';
 import { config } from './config.js';
 import { runAndParse, saveScrape, yesterdayReportDate } from './scrapeRunner.js';
+import { getPlatformConfig } from './models/ScheduleSetting.js';
+import { msUntilCutover } from './businessDay.js';
 import { logEvent } from './logBroker.js';
-import { sendSessionAlert } from './telegram.js';
+import { sendSessionAlert, sendAccessDeniedAlert } from './telegram.js';
 
-const CAPTURE_HOUR = 0;   // 00:15 local (ICT) — just after midnight, day is complete
-const CAPTURE_MIN = 15;
-const GAP_MS = 1500;      // small pause between profiles to avoid a launch storm
+const CAPTURE_OFFSET_MIN = 15; // capture this many minutes after each cutover
+const GAP_MS = 1500;           // small pause between profiles to avoid a launch storm
+const KINDS = ['zoomwlb', 'cgaming'];
 
-let timer = null;
-let running = false;
+const timers = new Map();  // kind -> timeout
+const running = new Set(); // kinds currently capturing
 let log = console;
-
-function msUntilNext(hour, minute) {
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(hour, minute, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
-  return next - now;
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -38,6 +34,14 @@ async function captureProfile(profile) {
     period: 'yesterday',
   });
   if (!result.loggedIn) {
+    if (result.accessDenied) {
+      const wasDenied = profile.status === 'access_denied';
+      profile.status = 'access_denied';
+      await profile.save().catch(() => {});
+      logEvent({ level: 'warn', source: 'capture', profile: profile.name, message: 'Yesterday capture skipped — access denied' });
+      if (!wasDenied) sendAccessDeniedAlert(profile, 'daily capture');
+      return 'access_denied';
+    }
     const wasOut = profile.status === 'logged_out';
     profile.status = 'logged_out';
     await profile.save().catch(() => {});
@@ -55,18 +59,17 @@ async function captureProfile(profile) {
 }
 
 /**
- * Capture yesterday for all zoomwlb profiles.
- * `onlyMissing`: skip profiles that already have yesterday stored (used for the
- * startup catch-up, so restarts don't re-scrape).
+ * Capture yesterday for every profile of one platform kind.
+ * `onlyMissing`: skip profiles that already have yesterday stored (startup
+ * catch-up, so restarts don't re-scrape).
  */
-export async function captureYesterdayAll({ onlyMissing = false } = {}) {
-  if (running) return;
-  running = true;
-  const rd = yesterdayReportDate();
+async function captureKind(kind, { onlyMissing = false } = {}) {
+  if (running.has(kind)) return;
+  running.add(kind);
   try {
-    // Both kinds expose yesterday: zoomwlb via yesterday* elements, cgaming via
-    // the prior day's bank-summary row.
-    const profiles = await Profile.find({ kind: { $in: ['zoomwlb', 'cgaming'] } });
+    const { dayCutover } = await getPlatformConfig(kind);
+    const rd = yesterdayReportDate(dayCutover);
+    const profiles = await Profile.find({ kind });
     let done = 0;
     for (const profile of profiles) {
       if (onlyMissing) {
@@ -82,36 +85,66 @@ export async function captureYesterdayAll({ onlyMissing = false } = {}) {
       }
       await sleep(GAP_MS);
     }
-    if (done) logEvent({ source: 'capture', message: `Yesterday archive run complete (${done} profile${done === 1 ? '' : 's'})` });
+    if (done) logEvent({ source: 'capture', message: `Yesterday archive (${kind}) complete — ${done} profile${done === 1 ? '' : 's'}` });
   } finally {
-    running = false;
+    running.delete(kind);
+  }
+}
+
+/** Capture yesterday for all platform kinds (used by the startup catch-up). */
+export async function captureYesterdayAll({ onlyMissing = false } = {}) {
+  for (const kind of KINDS) {
+    await captureKind(kind, { onlyMissing });
+  }
+}
+
+function clearTimer(kind) {
+  const t = timers.get(kind);
+  if (t) {
+    clearTimeout(t);
+    timers.delete(kind);
+  }
+}
+
+/** (Re)arm one kind's timer for its next cutover + offset. */
+async function scheduleKind(kind) {
+  clearTimer(kind);
+  const { dayCutover } = await getPlatformConfig(kind);
+  const delay = msUntilCutover(new Date(), dayCutover, CAPTURE_OFFSET_MIN);
+  timers.set(
+    kind,
+    setTimeout(() => {
+      captureKind(kind, { onlyMissing: false })
+        .catch((err) => log.error?.({ err, kind }, 'daily yesterday capture failed'))
+        .finally(() => { scheduleKind(kind).catch(() => {}); });
+    }, delay),
+  );
+}
+
+/** Re-read cutovers and re-arm every kind's timer (call after a settings change). */
+export async function rescheduleDailyCapture() {
+  for (const kind of KINDS) {
+    await scheduleKind(kind);
   }
 }
 
 export function startDailyCapture(logger = console) {
   log = logger;
 
-  // Catch-up shortly after boot: fill any zoomwlb profiles missing yesterday.
+  // Catch-up shortly after boot: fill any profiles missing yesterday.
   setTimeout(() => {
     captureYesterdayAll({ onlyMissing: true }).catch((err) =>
       logger.error?.({ err }, 'startup yesterday catch-up failed'),
     );
   }, 15000);
 
-  const schedule = () => {
-    timer = setTimeout(async () => {
-      await captureYesterdayAll({ onlyMissing: false }).catch((err) =>
-        logger.error?.({ err }, 'daily yesterday capture failed'),
-      );
-      schedule();
-    }, msUntilNext(CAPTURE_HOUR, CAPTURE_MIN));
-  };
-  schedule();
+  rescheduleDailyCapture().catch((err) =>
+    logger.error?.({ err }, 'daily capture scheduling failed'),
+  );
 
-  logger.info?.(`Daily yesterday-capture scheduled for ${String(CAPTURE_HOUR).padStart(2, '0')}:${String(CAPTURE_MIN).padStart(2, '0')} ICT`);
+  logger.info?.(`Daily yesterday-capture scheduled per platform at cutover + ${CAPTURE_OFFSET_MIN} min ICT`);
 }
 
 export function stopDailyCapture() {
-  if (timer) clearTimeout(timer);
-  timer = null;
+  for (const kind of KINDS) clearTimer(kind);
 }

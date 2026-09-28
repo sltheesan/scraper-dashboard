@@ -216,6 +216,16 @@ async function doFetch(chatId, profileId, period = 'today', username) {
       : { ...(await runAndParse(profile, { headless: config.headless, log, period })), cached: false };
 
     if (!result.loggedIn) {
+      if (result.accessDenied) {
+        const wasDenied = profile.status === 'access_denied';
+        profile.status = 'access_denied';
+        await profile.save();
+        logEvent({ level: 'warn', source: 'telegram', profile: profile.name, message: 'Telegram fetch: access denied' });
+        if (!wasDenied) sendAccessDeniedAlert(profile, 'Telegram fetch');
+        await finishText(chatId, statusId,
+          `🚫 <b>${esc(profile.name)}</b>\nAccess denied — re-login this profile, or check its account permission / IP allowlist.`, kb);
+        return;
+      }
       const wasOut = profile.status === 'logged_out';
       profile.status = 'logged_out';
       await profile.save();
@@ -485,5 +495,43 @@ export async function sendSessionAlert(profile, source = '') {
     });
   } catch (err) {
     log.warn?.(`session alert failed: ${err.message}`);
+  }
+}
+
+/**
+ * Broadcast an "access denied" alert to every configured alert chat. Same
+ * best-effort, per-recipient-tolerant delivery as sendSessionAlert.
+ */
+export async function sendAccessDeniedAlert(profile, source = '') {
+  try {
+    if (!token) return; // bot not running
+    const { alertChatIds } = await getTelegramSettings();
+    if (!alertChatIds.length) return;
+
+    const text =
+      `🚫 <b>Access denied</b>\n` +
+      `Profile: <b>${esc(profile.name)}</b>\n` +
+      `🕒 ${esc(fmtICT())}` +
+      (source ? `\nDetected by: ${esc(source)}` : '') +
+      `\n\nThe account was bounced to an Access-Denied page. Re-login this ` +
+      `profile, or check its account permission / IP allowlist.`;
+
+    const results = await Promise.all(
+      alertChatIds.map((chatId) =>
+        call('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML' })
+          .then(() => ({ chatId, ok: true }))
+          .catch((err) => ({ chatId, ok: false, error: err.message })),
+      ),
+    );
+    const sent = results.filter((r) => r.ok).length;
+    const failed = results.length - sent;
+    logEvent({
+      level: 'warn',
+      source: 'alert',
+      profile: profile.name,
+      message: `Access-denied alert sent to ${sent}/${results.length}${failed ? ` (failed: ${results.filter((r) => !r.ok).map((r) => r.chatId).join(', ')})` : ''} · ${source}`,
+    });
+  } catch (err) {
+    log.warn?.(`access-denied alert failed: ${err.message}`);
   }
 }

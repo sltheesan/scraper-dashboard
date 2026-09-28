@@ -1,7 +1,10 @@
 // Parser for the cgaming "bank-summary" daily report table.
 //
-// Picks the row whose Report Date STARTS today (in local time) and pulls out
+// Picks the row whose Report Date belongs to the requested BUSINESS day (the
+// day boundary is the configurable cutover, default 11:00 ICT) and pulls out
 // the fields the user wants stored.
+
+import { businessDayDate, DEFAULT_CUTOVER } from '../businessDay.js';
 
 function parseNumber(s) {
   if (s == null) return null;
@@ -28,14 +31,6 @@ function parseStartDate(s) {
   );
 }
 
-function localDayKey(d) {
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-}
-
-function midnightLocal(d) {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
 export function findBankSummaryTable(tables) {
   return tables.find((t) =>
     String(t.className || '').split(/\s+/).includes('bank-summary'),
@@ -50,11 +45,25 @@ function headerIndex(headers, name) {
 }
 
 /**
- * Parse the bank-summary table and return { reportDate, reportDateString, data, raw }
- * for the row whose start date is today, or null if no such row exists.
+ * Parse the bank-summary table and return { reportDate, reportDateString, data,
+ * raw, fallback } for the row belonging to `targetDate`'s business day.
+ *
+ * @param {Date}    opts.targetDate   Midnight-aligned business day to match.
+ * @param {string}  opts.cutover      "HH:MM" business-day boundary.
+ * @param {boolean} opts.allowFallback When the target row is absent (e.g. the
+ *   source hasn't published today's period yet), return the most recent EARLIER
+ *   complete day instead, flagged `fallback: true`. Off by default (yesterday
+ *   must be exact).
+ * Returns null when nothing suitable is found.
  */
-export function parseBankSummary(table, { now = new Date() } = {}) {
+export function parseBankSummary(
+  table,
+  { targetDate, cutover = DEFAULT_CUTOVER, allowFallback = false } = {},
+) {
   if (!table || !Array.isArray(table.headers) || !Array.isArray(table.rows)) {
+    return null;
+  }
+  if (!(targetDate instanceof Date) || Number.isNaN(targetDate.getTime())) {
     return null;
   }
 
@@ -69,35 +78,51 @@ export function parseBankSummary(table, { now = new Date() } = {}) {
 
   if (idx.reportDate < 0) return null;
 
-  const todayKey = localDayKey(now);
+  const targetMs = targetDate.getTime();
+  let exact = null;
+  let fallbackRow = null; // most recent row strictly before the target day
 
   for (const row of table.rows) {
     const dateStr = row[idx.reportDate];
     const start = parseStartDate(dateStr);
     if (!start) continue;
-    if (localDayKey(start) !== todayKey) continue;
+    const bday = businessDayDate(start, cutover);
+    const bms = bday.getTime();
 
-    const newRegRaw = String(row[idx.newRegister] ?? '');
-    const [newRegAcct, newRegDep] = newRegRaw.split('/').map((s) => s.trim());
-
-    const raw = Object.fromEntries(
-      table.headers.map((h, i) => [h, row[i] ?? null]),
-    );
-
-    return {
-      reportDate: midnightLocal(start),
-      reportDateString: dateStr,
-      data: {
-        newRegistrationCount: parseNumber(newRegAcct),
-        newDepositCount: parseNumber(newRegDep),
-        totalDepositCount: parseNumber(row[idx.totalTrxDeposit]),
-        totalDepositAmount: parseNumber(row[idx.totalDeposit]),
-        totalWithdrawalCount: parseNumber(row[idx.totalTrxWithdrawal]),
-        totalWithdrawalAmount: parseNumber(row[idx.totalWithdrawal]),
-      },
-      raw,
-    };
+    if (bms === targetMs) {
+      exact = { row, dateStr, bday };
+      break;
+    }
+    if (allowFallback && bms < targetMs) {
+      if (!fallbackRow || bms > fallbackRow.bday.getTime()) {
+        fallbackRow = { row, dateStr, bday };
+      }
+    }
   }
 
-  return null;
+  const hit = exact || (allowFallback ? fallbackRow : null);
+  if (!hit) return null;
+
+  const { row, dateStr, bday } = hit;
+  const newRegRaw = String(row[idx.newRegister] ?? '');
+  const [newRegAcct, newRegDep] = newRegRaw.split('/').map((s) => s.trim());
+
+  const raw = Object.fromEntries(
+    table.headers.map((h, i) => [h, row[i] ?? null]),
+  );
+
+  return {
+    reportDate: bday,
+    reportDateString: dateStr,
+    data: {
+      newRegistrationCount: parseNumber(newRegAcct),
+      newDepositCount: parseNumber(newRegDep),
+      totalDepositCount: parseNumber(row[idx.totalTrxDeposit]),
+      totalDepositAmount: parseNumber(row[idx.totalDeposit]),
+      totalWithdrawalCount: parseNumber(row[idx.totalTrxWithdrawal]),
+      totalWithdrawalAmount: parseNumber(row[idx.totalWithdrawal]),
+    },
+    raw,
+    fallback: !exact,
+  };
 }

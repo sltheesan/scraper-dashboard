@@ -5,6 +5,7 @@ export const PROFILE_STATUSES = [
   'logged_in',
   'scraping',
   'logged_out',
+  'access_denied',
   'error',
 ];
 

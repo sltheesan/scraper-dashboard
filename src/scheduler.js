@@ -13,7 +13,7 @@ import { runAndParse, saveScrape } from './scrapeRunner.js';
 import { runRefresh } from './scraper.js';
 import { acquireContext } from './contextPool.js';
 import { logEvent } from './logBroker.js';
-import { sendSessionAlert } from './telegram.js';
+import { sendSessionAlert, sendAccessDeniedAlert } from './telegram.js';
 
 const fetchTimers = new Map();   // profileId(str) -> timeout
 const refreshTimers = new Map(); // profileId(str) -> timeout
@@ -103,7 +103,19 @@ async function runFetchTick(profileId) {
       log: logger,
     });
 
-    if (!result.loggedIn) {
+    if (!result.loggedIn && result.accessDenied) {
+      const wasDenied = profile.status === 'access_denied';
+      profile.status = 'access_denied';
+      await profile.save();
+      logger.warn?.({ profile: profile.name }, 'scheduled fetch: access denied');
+      logEvent({
+        level: 'warn',
+        source: 'fetch',
+        profile: profile.name,
+        message: 'Access denied — re-login or check permission/IP',
+      });
+      if (!wasDenied) sendAccessDeniedAlert(profile, 'scheduled fetch');
+    } else if (!result.loggedIn) {
       const wasOut = profile.status === 'logged_out';
       profile.status = 'logged_out';
       await profile.save();
@@ -167,7 +179,18 @@ async function runRefreshTick(profileId) {
     const context = await acquireContext(profile, { headless: config.headless });
     const result = await runRefresh(profile, context, { log: logger });
 
-    if (!result.loggedIn) {
+    if (!result.loggedIn && result.accessDenied) {
+      const wasDenied = profile.status === 'access_denied';
+      profile.status = 'access_denied';
+      await profile.save();
+      logEvent({
+        level: 'warn',
+        source: 'refresh',
+        profile: profile.name,
+        message: 'Access denied — re-login or check permission/IP',
+      });
+      if (!wasDenied) sendAccessDeniedAlert(profile, 'session refresh');
+    } else if (!result.loggedIn) {
       const wasOut = profile.status === 'logged_out';
       profile.status = 'logged_out';
       await profile.save();

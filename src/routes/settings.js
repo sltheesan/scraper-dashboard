@@ -10,6 +10,7 @@ import {
   removeAlertChatId,
 } from '../models/TelegramSetting.js';
 import { applySettings, rescheduleAll, getSnapshot } from '../scheduler.js';
+import { rescheduleDailyCapture } from '../dailyCapture.js';
 import { getBotInfo, sendTestAlert } from '../telegram.js';
 import { config } from '../config.js';
 import { logEvent } from '../logBroker.js';
@@ -27,12 +28,29 @@ const slotSchema = {
   },
 };
 
+const platformSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    dayCutover: { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' },
+    todayMissing: { type: 'string', enum: ['calm', 'fallback'] },
+  },
+};
+
 const patchBody = {
   type: 'object',
   additionalProperties: false,
   properties: {
     fetch: slotSchema,
     refresh: slotSchema,
+    platforms: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        cgaming: platformSchema,
+        zoomwlb: platformSchema,
+      },
+    },
   },
 };
 
@@ -56,7 +74,13 @@ export default async function settingsRoutes(fastify) {
       const next = await updateSettings(request.body);
       applySettings(next);
       await rescheduleAll();
-      const summary = `${describe('Fetch', next.fetch)} · ${describe('Refresh', next.refresh)}`;
+      // A cutover change moves when the nightly archive runs — re-arm it.
+      if (request.body.platforms) await rescheduleDailyCapture();
+      let summary = `${describe('Fetch', next.fetch)} · ${describe('Refresh', next.refresh)}`;
+      if (request.body.platforms) {
+        summary += ` · cgaming cutover ${next.platforms.cgaming.dayCutover}/${next.platforms.cgaming.todayMissing}`
+          + ` · zoomwlb cutover ${next.platforms.zoomwlb.dayCutover}/${next.platforms.zoomwlb.todayMissing}`;
+      }
       logEvent({ source: 'settings', message: summary });
       audit(request, 'settings.scheduler', summary);
       return { ok: true, settings: next };

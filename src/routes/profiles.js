@@ -7,7 +7,7 @@ import { runAndParse, fetchYesterday } from '../scrapeRunner.js';
 import { reschedule } from '../scheduler.js';
 import { logEvent } from '../logBroker.js';
 import { recordActivity } from '../activityLog.js';
-import { sendSessionAlert } from '../telegram.js';
+import { sendSessionAlert, sendAccessDeniedAlert } from '../telegram.js';
 
 // Audit-log helper for admin actions on these routes.
 const audit = (request, action, target, details) =>
@@ -255,6 +255,24 @@ export default async function profileRoutes(fastify) {
       const { result, parsed, cached } = period === 'yesterday'
         ? await fetchYesterday(profile, { headless: config.headless, log: request.log })
         : { ...(await runAndParse(profile, { headless: config.headless, log: request.log, period })), cached: false };
+
+      if (!result.loggedIn && result.accessDenied) {
+        const wasDenied = profile.status === 'access_denied';
+        profile.status = 'access_denied';
+        await profile.save();
+        logEvent({
+          level: 'warn',
+          source: 'manual',
+          profile: profile.name,
+          message: 'Manual fetch: access denied',
+        });
+        if (!wasDenied) sendAccessDeniedAlert(profile, 'manual fetch');
+        return reply.code(403).send({
+          error: 'access_denied',
+          message: result.message,
+          url: result.url,
+        });
+      }
 
       if (!result.loggedIn) {
         const wasOut = profile.status === 'logged_out';

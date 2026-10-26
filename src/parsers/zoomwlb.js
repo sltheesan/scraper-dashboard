@@ -14,12 +14,15 @@ function parseNumber(s) {
   return Number.isFinite(n) ? n : null;
 }
 
-function midnightLocal(d) {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-export function parseZoomwlb(fields, { now = new Date() } = {}) {
+/**
+ * Shape the extracted zoomwlb fields into the storage format.
+ *
+ * @param {Date} opts.targetDate Midnight-aligned business day this snapshot is
+ *   for (computed by the caller from the cutover). Used as the reportDate key.
+ */
+export function parseZoomwlb(fields, { targetDate } = {}) {
   if (!fields || typeof fields !== 'object') return null;
+  if (!(targetDate instanceof Date) || Number.isNaN(targetDate.getTime())) return null;
 
   const anyValue = COMMON_FIELDS.some((k) => fields[k] != null);
   if (!anyValue) return null;
@@ -35,8 +38,8 @@ export function parseZoomwlb(fields, { now = new Date() } = {}) {
   }
 
   return {
-    reportDate: midnightLocal(now),
-    reportDateString: now.toISOString(),
+    reportDate: targetDate,
+    reportDateString: targetDate.toISOString(),
     data,
     raw: { ...fields },
   };

@@ -84,6 +84,10 @@ const fetchEnabledEl = document.getElementById('fetch-enabled');
 const fetchMinutesEl = document.getElementById('fetch-minutes');
 const refreshEnabledEl = document.getElementById('refresh-enabled');
 const refreshMinutesEl = document.getElementById('refresh-minutes');
+const cgamingCutoverEl = document.getElementById('cgaming-cutover');
+const cgamingTodayMissingEl = document.getElementById('cgaming-todaymissing');
+const zoomwlbCutoverEl = document.getElementById('zoomwlb-cutover');
+const zoomwlbTodayMissingEl = document.getElementById('zoomwlb-todaymissing');
 const settingsError = document.getElementById('settings-error');
 
 document.getElementById('open-settings').addEventListener('click', openSettings);
@@ -101,10 +105,24 @@ function readSlot(enabledEl, minutesEl) {
   return { enabled: enabledEl.checked, intervalMs: minutes * 60 * 1000 };
 }
 
+const CUTOVER_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function applyPlatform(p, cutoverEl, missingEl) {
+  cutoverEl.value = CUTOVER_RE.test(p?.dayCutover) ? p.dayCutover : '11:00';
+  missingEl.value = p?.todayMissing === 'fallback' ? 'fallback' : 'calm';
+}
+
+function readPlatform(cutoverEl, missingEl) {
+  const cut = CUTOVER_RE.test(cutoverEl.value) ? cutoverEl.value : '11:00';
+  return { dayCutover: cut, todayMissing: missingEl.value === 'fallback' ? 'fallback' : 'calm' };
+}
+
 async function openSettings() {
   settingsError.hidden = true;
   applySlot({}, fetchEnabledEl, fetchMinutesEl);
   applySlot({}, refreshEnabledEl, refreshMinutesEl);
+  applyPlatform({}, cgamingCutoverEl, cgamingTodayMissingEl);
+  applyPlatform({}, zoomwlbCutoverEl, zoomwlbTodayMissingEl);
   settingsModal.hidden = false;
   try {
     const res = await fetch('/api/settings/scheduler');
@@ -112,6 +130,8 @@ async function openSettings() {
     const { settings } = await res.json();
     applySlot(settings.fetch, fetchEnabledEl, fetchMinutesEl);
     applySlot(settings.refresh, refreshEnabledEl, refreshMinutesEl);
+    applyPlatform(settings.platforms?.cgaming, cgamingCutoverEl, cgamingTodayMissingEl);
+    applyPlatform(settings.platforms?.zoomwlb, zoomwlbCutoverEl, zoomwlbTodayMissingEl);
   } catch (err) {
     settingsError.textContent = err.message;
     settingsError.hidden = false;
@@ -123,6 +143,10 @@ document.getElementById('settings-save').addEventListener('click', async () => {
   const payload = {
     fetch: readSlot(fetchEnabledEl, fetchMinutesEl),
     refresh: readSlot(refreshEnabledEl, refreshMinutesEl),
+    platforms: {
+      cgaming: readPlatform(cgamingCutoverEl, cgamingTodayMissingEl),
+      zoomwlb: readPlatform(zoomwlbCutoverEl, zoomwlbTodayMissingEl),
+    },
   };
   try {
     const res = await fetch('/api/settings/scheduler', {
@@ -172,8 +196,9 @@ async function restoreBackup() {
   if (!file) { backupStatus.textContent = 'Choose a backup file first.'; return; }
   const ok = window.confirm(
     `Restore from "${file.name}"?\n\n` +
-    `This will REPLACE every collection — profiles, scrapes, settings, ` +
-    `activity log — with the contents of the backup.\n\n` +
+    `Each collection present in the backup will be REPLACED with its contents. ` +
+    `Collections missing/empty in the backup are left untouched, and a safety ` +
+    `snapshot of the current database is saved first.\n\n` +
     `Continue?`,
   );
   if (!ok) return;
@@ -188,9 +213,13 @@ async function restoreBackup() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.message || body.error || `HTTP ${res.status}`);
-    const total = Object.values(body.summary || {}).reduce((a, b) => a + b, 0);
-    const lines = Object.entries(body.summary || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
-    backupStatus.textContent = `Restored ${total} docs — ${lines}`;
+    const restored = body.restored || {};
+    const total = Object.values(restored).reduce((a, b) => a + b, 0);
+    const lines = Object.entries(restored).map(([k, v]) => `${k}: ${v}`).join(', ');
+    const skippedNote = body.skipped && body.skipped.length
+      ? ` · preserved (not in backup): ${body.skipped.join(', ')}`
+      : '';
+    backupStatus.textContent = `Restored ${total} docs — ${lines}${skippedNote}`;
     backupFile.value = '';
     // Refresh the in-memory profile table so it matches the restored DB.
     loadProfiles();
@@ -775,6 +804,20 @@ async function runFetch(id, name, button, period = 'today') {
     });
     const body = await res.json().catch(() => ({}));
 
+    if (res.status === 403 && body.error === 'access_denied') {
+      fetchModalBody.innerHTML = `
+        <div class="alert alert-warn">
+          <strong>Access denied.</strong>
+          <p>The account was bounced to an Access-Denied page — the session is no
+          longer authorized. Close this dialog and click <strong>Login</strong> on
+          the profile row, or check the account's report permission / IP allowlist.</p>
+          <p class="muted">Landed on: ${escapeHtml(body.url || '')}</p>
+        </div>
+      `;
+      loadProfiles();
+      return;
+    }
+
     if (res.status === 409 && body.error === 'logged_out') {
       fetchModalBody.innerHTML = `
         <div class="alert alert-warn">
@@ -851,7 +894,18 @@ function renderParsedPanel(parsed, cached = false) {
     ? '<span class="badge badge-ok">from archive</span>'
     : '<span class="badge">manual fetch · not saved</span>';
 
+  // Fallback: a live "today" request that returned the last complete day
+  // because the source hasn't published today's period yet.
+  const fallbackNote = parsed.fallback
+    ? `<div class="alert alert-warn" style="margin-bottom:8px;">
+         <strong>Showing the last complete day.</strong>
+         <p>Today's period isn't on the source yet, so this is the most recent
+         finished business day (per your "fall back" setting).</p>
+       </div>`
+    : '';
+
   return `
+    ${fallbackNote}
     <div class="parsed-panel">
       <div class="parsed-head">
         <h4>${cached ? 'Yesterday' : 'Preview'} ${badge}</h4>
@@ -876,10 +930,12 @@ function renderFetchResult(body) {
   } else if (body.kind === 'cgaming' && body.tables?.length) {
     parts.push(`
       <div class="alert alert-warn">
-        <strong>No row matched today's date.</strong>
-        <p>The bank-summary table was found, but no row's start date matches today
-        (${new Date().toLocaleDateString('en-GB', { timeZone: DISPLAY_TZ })}). Maybe the new period hasn't started yet,
-        or the table sort order differs.</p>
+        <strong>Today's period hasn't started on the source yet.</strong>
+        <p>The bank-summary table was found, but the current business day
+        (starting at the configured cutover) has no row yet — the platform
+        usually publishes it a little after the cutover. Try again shortly, or
+        set this platform's "today isn't published" option to
+        <em>Fall back to the last complete day</em> in Settings.</p>
       </div>
     `);
   } else if (body.kind === 'zoomwlb') {

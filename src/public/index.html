@@ -138,6 +138,45 @@
           </fieldset>
 
           <fieldset class="fields-block">
+            <legend>Platform day cutover</legend>
+            <p class="muted" style="margin: 0 0 10px; font-size: 12px;">
+              The time a new business day starts (ICT). The previous day ends one
+              second before this. Yesterday's archive is captured 15&nbsp;min after
+              each cutover, once the day has frozen.
+            </p>
+
+            <div class="platform-row" style="margin-bottom:12px;">
+              <strong>cgaming</strong>
+              <label>
+                Day cutover time (new day starts)
+                <input type="time" id="cgaming-cutover" step="60" value="11:00" />
+              </label>
+              <label>
+                When today's data isn't published yet
+                <select id="cgaming-todaymissing">
+                  <option value="calm">Show a calm "not started yet" message</option>
+                  <option value="fallback">Fall back to the last complete day</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="platform-row">
+              <strong>zoomwlb</strong>
+              <label>
+                Day cutover time (new day starts)
+                <input type="time" id="zoomwlb-cutover" step="60" value="11:00" />
+              </label>
+              <label>
+                When today's data isn't published yet
+                <select id="zoomwlb-todaymissing">
+                  <option value="calm">Show a calm "not started yet" message</option>
+                  <option value="fallback">Fall back to the last complete day</option>
+                </select>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="fields-block">
             <legend>Backup &amp; Restore</legend>
             <p class="muted" style="margin: 0 0 10px; font-size: 12px;">
               Download the full database as a JSON file, or restore from one.

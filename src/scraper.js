@@ -128,6 +128,20 @@ async function looksLikeLoginPage(page, targetUrl) {
 }
 
 /**
+ * Heuristic: were we bounced to an "Access Denied" page?
+ * True if the URL is an AccessDenied page or the document title says so.
+ */
+async function looksLikeAccessDenied(page) {
+  try {
+    if (/access[_-]?denied/i.test(page.url())) return true;
+    const title = await page.title().catch(() => '');
+    return /access\s*denied/i.test(title);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Extract every <table> in a single frame as { headers, rows }.
  * Headers come from <thead th> if present, else from the first row's th/td cells.
  */
@@ -259,6 +273,20 @@ export async function runFetch(profile, context, { log, period = 'today' } = {})
     };
   }
 
+  // Distinct from a login redirect: the session cookie is still present, but the
+  // account was bounced to an "Access Denied" page (de-authorized session, lost
+  // report permission, or IP not allowlisted). Surface it instead of silently
+  // extracting nothing.
+  if (await looksLikeAccessDenied(page)) {
+    return {
+      loggedIn: false,
+      accessDenied: true,
+      url: page.url(),
+      title: await page.title().catch(() => ''),
+      message: 'Access denied — the account is not authorized to view the report. Re-login this profile, or check its permission / IP allowlist.',
+    };
+  }
+
   if (profile.buttonSelector) {
     const btn = page.locator(profile.buttonSelector).first();
     await btn.waitFor({ state: 'visible', timeout: 15000 });
@@ -324,6 +352,10 @@ export async function runRefresh(profile, context, { log } = {}) {
   const page = context.pages()[0] || (await context.newPage());
   await page.goto(profile.targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  if (await looksLikeAccessDenied(page)) {
+    log?.info?.({ profile: profile.name, url: page.url() }, 'refresh tick: access denied');
+    return { loggedIn: false, accessDenied: true, url: page.url() };
+  }
   const loggedIn = !(await looksLikeLoginPage(page, profile.targetUrl));
   log?.info?.({ profile: profile.name, loggedIn, url: page.url() }, 'refresh tick');
   return { loggedIn, url: page.url() };

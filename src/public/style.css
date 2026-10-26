@@ -211,6 +211,7 @@ button.danger:hover { background: rgba(255, 93, 93, 0.08); }
 .status-logged_in  { background: rgba(79, 140, 255, 0.15); color: #82aaff; }
 .status-scraping   { background: rgba(255, 200, 70, 0.15); color: #ffc846; }
 .status-logged_out { background: rgba(255, 93, 93, 0.15);  color: #ff8a8a; }
+.status-access_denied { background: rgba(255, 149, 0, 0.18); color: #ffb454; }
 .status-error      { background: rgba(255, 93, 93, 0.2);   color: #ff5d5d; }
 
 .modal {

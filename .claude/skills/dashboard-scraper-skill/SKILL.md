@@ -11,12 +11,48 @@ description: >-
 
 # Dashboard Scraper — Project Skill
 
-A single-PC system that keeps 20+ authenticated browser sessions alive
+A self-hosted system that keeps 20+ authenticated browser sessions alive
 (Playwright + real Chrome), scrapes two site layouts (`cgaming`, `zoomwlb`),
 archives daily totals to local MongoDB, and serves a web dashboard + Telegram
 bot. **All timestamps are forced to Indochina Time (GMT+7, `Asia/Bangkok`).**
 
-Project root: `c:\Users\USER\Documents\scraper-dashboard-main`
+Project root (dev): `c:\Users\User\Documents\Projects\scraper-dashboard`
+
+---
+
+## 0. Production Infrastructure
+
+The scraper runs on a **dedicated DigitalOcean Droplet** (SGP1), separate from
+System 200M. As of 2026-11-03 the scraper is independently accessible — it no
+longer requires 200M as a gateway.
+
+| Item | Value |
+|---|---|
+| **VPS IP** | `159.89.201.35` |
+| **Domain** | `https://scraper.200m.tech` |
+| **noVNC** | `https://scraper.200m.tech/vnc/vnc.html` |
+| **SSH** | `ssh root@159.89.201.35` |
+| **Specs** | 8 vCPU, 16 GB RAM (DO Regular, CPU+RAM resize — reversible) |
+| **OS** | Ubuntu Noble 24.04 (Playwright base image) |
+| **Container** | `scraper-app` — Docker, `network_mode: host`, `shm_size: 1gb` |
+| **MongoDB** | Native on host, `127.0.0.1:27017` (not containerized) |
+| **Reverse proxy** | Caddy on host (ports 80/443) → `localhost:3000` (app) + `localhost:6080` (noVNC) |
+| **TLS** | Cloudflare-proxied DNS → Caddy (Let's Encrypt cert, mostly unused behind CF) |
+| **Firewall (UFW)** | 22 ALLOW, 80/443 ALLOW, 3000 DENY, 6080 DENY. Caddy reaches app via localhost. |
+| **Profiles data** | `/opt/scraper/profiles` (bind-mounted into container) |
+| **Env / secrets** | `/opt/scraper/.env` (bind-mounted as `env_file`) |
+| **Backups** | `/opt/scraper/backups/` (mongodump snapshots) |
+
+**Container internals** (managed by supervisord — see `docker/supervisord.conf`):
+1. **Xvfb** — virtual display `:99` (1366×850)
+2. **Fluxbox** — window manager on `:99`
+3. **x11vnc** — VNC server, `localhost:5900` only
+4. **websockify/noVNC** — web VNC client on port `6080`
+5. **Node app** — `node src/server.js` on port `3000`
+
+**Deployment:** `docker compose up -d --build` on the VPS. Container is
+disposable (stateful data is on the host). Profiles directory and `.env` survive
+rebuilds.
 
 ---
 
@@ -33,6 +69,7 @@ Project root: `c:\Users\USER\Documents\scraper-dashboard-main`
 - `npm run login -- <profile-name>` → opens a Chrome window for manual login
 
 Server listens on **`0.0.0.0:3000`** → http://localhost:3000 (dashboard, JWT-cookie gated). `/login` is public.
+Production: `https://scraper.200m.tech` (Caddy reverse-proxies to `:3000`).
 
 **Key env** (`.env`, loaded+validated in [config.js](../../../src/config.js)):
 `MONGO_URL`, `NODE_ENV`, `PORT`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `JWT_SECRET`, `HEADLESS`, `BROWSER_CHANNEL=chrome`, `TELEGRAM_BOT_TOKEN`.
